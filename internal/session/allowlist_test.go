@@ -35,11 +35,11 @@ func (f *fakeRunner) ranAny(substr string) bool {
 	return false
 }
 
-func testDeps(t *testing.T, r lima.Runner, ws string) Deps {
+func testDeps(t *testing.T, r lima.Runner) Deps {
 	t.Helper()
 	c := config.Default()
-	c.ProjectsRoot = filepath.Dir(ws)
-	return Deps{Client: lima.Client{R: r}, Config: c, Workspace: ws, AgentUser: "devuser"}
+	c.ProjectsRoot = "/home/st/projects"
+	return Deps{Client: lima.Client{R: r}, Config: c, AgentUser: "devuser"}
 }
 
 func fragmentPath() string { return fragmentDir + "/" + HostFragmentName }
@@ -67,7 +67,7 @@ func TestHostFragmentNameSortsAfterBase(t *testing.T) {
 
 func TestApplyAllowlistInstallsFragmentAndReloadsSquid(t *testing.T) {
 	r := &fakeRunner{}
-	d := testDeps(t, r, t.TempDir())
+	d := testDeps(t, r)
 	d.Config.ExtraDomains = []string{"registry.example.com"}
 	if err := ApplyAllowlist(context.Background(), d); err != nil {
 		t.Fatalf("ApplyAllowlist: %v", err)
@@ -88,7 +88,7 @@ func TestApplyAllowlistSkipsReloadWhenUnchanged(t *testing.T) {
 	r := &fakeRunner{out: map[string][]byte{
 		strings.Join(lima.Client{}.AdminArgs([]string{"cat", fragmentPath()}), " "): []byte(existing),
 	}}
-	d := testDeps(t, r, t.TempDir())
+	d := testDeps(t, r)
 	d.Config.ExtraDomains = []string{"registry.example.com"}
 	if err := ApplyAllowlist(context.Background(), d); err != nil {
 		t.Fatalf("ApplyAllowlist: %v", err)
@@ -100,7 +100,7 @@ func TestApplyAllowlistSkipsReloadWhenUnchanged(t *testing.T) {
 
 func TestApplyAllowlistNoDomainsAndNoFragmentIsNoOp(t *testing.T) {
 	r := &fakeRunner{}
-	d := testDeps(t, r, t.TempDir())
+	d := testDeps(t, r)
 	if err := ApplyAllowlist(context.Background(), d); err != nil {
 		t.Fatalf("ApplyAllowlist: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestApplyAllowlistRemovesFragmentWhenDomainsCleared(t *testing.T) {
 		strings.Join(lima.Client{}.AdminArgs([]string{"cat", fragmentPath()}), " "): []byte(
 			FragmentContent([]string{"registry.example.com"})),
 	}}
-	d := testDeps(t, r, t.TempDir())
+	d := testDeps(t, r)
 	d.Config.ExtraDomains = nil
 	if err := ApplyAllowlist(context.Background(), d); err != nil {
 		t.Fatalf("ApplyAllowlist: %v", err)
@@ -129,21 +129,24 @@ func TestApplyAllowlistRemovesFragmentWhenDomainsCleared(t *testing.T) {
 	}
 }
 
-// The workspace is agent-writable; a domain file there must not influence the
-// allowlist. This is the regression guard for dropping .sandbox-domains.
-func TestApplyAllowlistIgnoresWorkspaceDomainFiles(t *testing.T) {
+// The workspace is agent-writable, so a domain file there must never influence
+// the allowlist. Deps has no workspace field at all, which makes this
+// structurally true; the guard here is against a reimplementation that reaches
+// for the working directory instead.
+func TestApplyAllowlistIgnoresDomainFilesInTheWorkingDirectory(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{".sandbox-domains", "sandbox-domains", ".code-vm-domains"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("attacker.example\n"), 0o644); err != nil {
 			t.Fatalf("write %s: %v", name, err)
 		}
 	}
+	t.Chdir(dir)
+
 	r := &fakeRunner{}
-	d := testDeps(t, r, dir)
-	if err := ApplyAllowlist(context.Background(), d); err != nil {
+	if err := ApplyAllowlist(context.Background(), testDeps(t, r)); err != nil {
 		t.Fatalf("ApplyAllowlist: %v", err)
 	}
 	if r.ranAny("copy") || r.ranAny("attacker.example") {
-		t.Errorf("workspace files must never reach the allowlist, got %v", r.calls)
+		t.Errorf("files in the working directory must never reach the allowlist, got %v", r.calls)
 	}
 }

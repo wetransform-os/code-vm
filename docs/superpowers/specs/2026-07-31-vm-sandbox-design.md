@@ -296,9 +296,9 @@ Every default invocation performs four steps:
 2. Verify `$PWD` is under a declared mount. If not, report that and suggest
    `code-vm mount`.
 3. Privileged session setup as `limaadmin`: refresh the Squid allowlist fragment
-   from the host config's `extraDomains`, reload Squid if it changed, render
-   `.sandbox-secrets.yaml` credentials, seed git identity from the host's
-   `git config user.name/user.email`.
+   from the host config's `extraDomains`, reload Squid if it changed, seed git
+   identity from the host's `git config user.name/user.email`. Nothing in this
+   step reads anything out of the workspace.
 4. Exec the command as `devuser` at the same path:
    `limactl shell --workdir "$PWD" code-sandbox sudo /usr/local/bin/sandbox-exec …`
 
@@ -372,13 +372,50 @@ the log drives this, `init-firewall.sh` creates `access.log` only when it is
 absent — truncating on every run would have erased the evidence a user reaches
 for `firewall audit` to inspect.
 
-### Credential injection
+### Credential injection — removed
 
-Host-side resolution is unchanged: `gopass`, `sops`, and similar commands run on
-the host where they are configured. The resolved payload is copied into guest
-tmpfs via `limactl copy`; `render-credentials.sh` renders the templates as root,
-locks the rendered files `root:devuser 0444`, and wipes the payload. Same flow
-as the container sandbox, different transport.
+**Removed during implementation.** The design ported the container sandbox's
+flow: `.sandbox-secrets.yaml` in the workspace declares secrets, each resolved by
+running its `source:` command on the host where `gopass`/`sops` live, with the
+payload copied into guest tmpfs and rendered by `render-credentials.sh`.
+
+Two problems, found while reviewing the allowlist rework:
+
+1. **Host command execution from an agent-authored file.** The workspace is
+   mounted writable and is what the agent edits. An agent that writes
+   `.sandbox-secrets.yaml` gets arbitrary command execution *on the host* the
+   next time `code-vm` runs in that directory. Every other control in this design
+   fails inside the VM; this one fails outside it, which makes it categorically
+   worse than anything the sandbox is meant to contain.
+2. **The protection story did not hold.** Rendered files were `root:devuser
+   0444` — group-readable by the agent — so the filesystem never stopped it. The
+   only barrier was a set of generated Claude Code deny patterns, which match
+   command strings where the path appears as a separate token; the shipped
+   profile allows `Bash(python *)`, so `python -c "open('<path>').read()"` is not
+   covered. The documented property ("the agent cannot read them") was false.
+
+Removing it also closed the deny-rule lifetime defect the review raised
+separately: the rules lived in tmpfs while the rendered files persisted on the
+guest disk, so a restart re-locked `settings.json` without them.
+
+Credentials are now a manual, one-time step into the persistent guest home. The
+VM makes that viable in a way the container did not: the container was recreated
+per run, so injection had to be automated; `/home/devuser` here survives
+restarts.
+
+**What a replacement must do differently.** Declare secrets in the *host config*,
+never in the workspace — the same trust-boundary lesson as the allowlist. Be
+honest about readability rather than asserting a protection that pattern-matching
+cannot deliver: either state that injected credentials are readable by the agent
+(so they should be sandbox-scoped and cheap to revoke), or keep the secret out of
+the guest entirely. The most promising form of the latter is to let the proxy
+authenticate on the agent's behalf, since Squid already sits in the path for
+every request — the credential would live in root-owned proxy config and the
+agent would never hold it. That works for plain HTTP and for an authenticating
+upstream peer, but not for origin auth inside a CONNECT tunnel without TLS
+interception, so it needs its own design pass. A narrower `code-vm secret`
+command — config-declared, run explicitly rather than implicitly on every
+invocation — is the pragmatic version.
 
 ## Project layout
 
@@ -399,10 +436,10 @@ vm-sandbox/
       lima/code-sandbox.yaml.tpl
       scripts/          # provision-system, provision-user-docker,
                         # sandbox-boot, init-firewall, lock-settings,
-                        # render-credentials, proxy-log, sandbox-exec
+                        # update-agent-clis, set-firewall-mode,
+                        # proxy-log, sandbox-exec
       systemd/sandbox-boot.service
       config/.claude/settings.json
-      sandbox-templates/
   test-vm-sandbox.sh
   docs/
 ```
@@ -436,7 +473,8 @@ Ported assertions:
   modify `~/.claude`.
 - Sensitive path exposure.
 - Firewall bypass attempts (direct `curl`, Python `requests`, DNS exfiltration).
-- Credential injection and its generated deny rules.
+- No workspace file is trusted: a planted `.sandbox-secrets.yaml` must neither
+  run anything on the host nor render anything in the guest.
 
 New VM-specific assertions:
 

@@ -24,11 +24,11 @@ const HostFragmentName = "10-host-config.conf"
 // HostRunner executes a command on the host. Injectable for tests.
 type HostRunner func(ctx context.Context, name string, args ...string) ([]byte, error)
 
-// Deps carries everything session setup needs.
+// Deps carries everything session setup needs. There is deliberately no
+// workspace field: nothing in session setup may read agent-authored files.
 type Deps struct {
 	Client    lima.Client
 	Config    config.Config
-	Workspace string
 	AgentUser string
 	Host      HostRunner
 }

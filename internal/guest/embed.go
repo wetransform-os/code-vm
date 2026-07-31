@@ -48,9 +48,6 @@ func guestPath(p string) (string, string) {
 	if rel, ok := trimPrefix(p, "files/config/"); ok {
 		return "/usr/local/share/sandbox-config/" + rel, "0444"
 	}
-	if rel, ok := trimPrefix(p, "files/sandbox-templates/"); ok {
-		return "/usr/local/share/sandbox-templates/" + rel, "0444"
-	}
 	return "", ""
 }
 

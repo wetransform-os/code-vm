@@ -58,18 +58,14 @@ modprobe ip_tables > /dev/null 2>&1 || true
 modprobe iptable_nat > /dev/null 2>&1 || true
 modprobe ip6_tables > /dev/null 2>&1 || true
 
-# ── mise, yq, gomplate ───────────────────────────────────────────────────────
+# ── mise ─────────────────────────────────────────────────────────────────────
+# Available to the agent for project toolchains. yq and gomplate used to be
+# installed here for credential rendering; that mechanism was removed, and
+# nothing in the guest uses them now.
 if [ ! -x /usr/local/bin/mise ]; then
     log "Installing mise"
     curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
 fi
-for tool in yq gomplate; do
-    if [ ! -x "/usr/local/bin/$tool" ]; then
-        log "Installing $tool via mise"
-        /usr/local/bin/mise use -g -y "$tool"
-        ln -sf "$(/usr/local/bin/mise which "$tool")" "/usr/local/bin/$tool"
-    fi
-done
 
 # ── Docker ───────────────────────────────────────────────────────────────────
 if ! command -v docker > /dev/null 2>&1; then

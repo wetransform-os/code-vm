@@ -27,7 +27,7 @@ func TestGitConfigContentOmitsMissingFields(t *testing.T) {
 
 func TestApplyGitIdentitySkipsWhenHostHasNoIdentity(t *testing.T) {
 	r := &fakeRunner{}
-	d := testDeps(t, r, t.TempDir())
+	d := testDeps(t, r)
 	d.Host = func(_ context.Context, _ string, _ ...string) ([]byte, error) {
 		return nil, context.Canceled // simulate `git config --get` exiting non-zero
 	}

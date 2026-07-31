@@ -54,7 +54,6 @@ func runDefault(ctx context.Context, args []string) error {
 	if err := session.Setup(ctx, session.Deps{
 		Client:    cl,
 		Config:    c,
-		Workspace: workdir,
 		AgentUser: agentUser,
 	}); err != nil {
 		return fmt.Errorf("session setup: %w", err)

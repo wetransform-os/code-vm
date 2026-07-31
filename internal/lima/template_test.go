@@ -96,22 +96,25 @@ func TestRenderIndentsDataFileContent(t *testing.T) {
 	}
 }
 
-// Lima evaluates mode:data content as a Go template with no opt-out. Raw
-// gomplate syntax fails its parse and triggers a "Couldn't process data
-// content" warning on every limactl invocation, so every "{{" must be
-// escaped as {{"{{"}} — which Lima's engine renders back to the original.
+// Lima evaluates mode:data content as a Go template with no opt-out. Content
+// that is not a valid Go template fails that parse and triggers a "Couldn't
+// process data content" warning on every limactl invocation, so every "{{" must
+// be escaped as {{"{{"}} — which Lima's engine renders back to the original.
+//
+// No shipped asset contains "{{" today; this keeps the guarantee for the next
+// one that does, and pins the round trip so the escaping stays lossless.
 func TestRenderEscapesGuestTemplateSyntax(t *testing.T) {
 	files := []guest.DataFile{{
-		Path:        "/usr/local/share/sandbox-templates/example.tpl",
-		Permissions: "0444",
-		Content:     "{{- range $k, $v := (ds \"ctx\").secrets -}}\n{{$k}}={{$v}}\n{{end -}}\n",
+		Path:        "/usr/local/lib/sandbox/example.sh",
+		Permissions: "0755",
+		Content:     "#!/bin/bash\n{{- range $k, $v := .Values -}}\n{{$k}}={{$v}}\n{{end -}}\n",
 	}}
 	out, err := Render(testConfig(), testParams(files))
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
-	if !strings.Contains(out, `{{"{{"}}- range $k, $v := (ds "ctx").secrets -}}`) {
-		t.Error("gomplate action openers must be escaped for Lima's template engine")
+	if !strings.Contains(out, `{{"{{"}}- range $k, $v := .Values -}}`) {
+		t.Error("action openers must be escaped for Lima's template engine")
 	}
 	if strings.Contains(out, "\n    {{- range") {
 		t.Error("raw {{ must not survive into a data entry: Lima warns on every invocation")

@@ -86,12 +86,34 @@ extraDomains:                 # added to the Squid allowlist
 containerProxy: false         # see below
 ```
 
-Per-project extras live in the project directory:
+Nothing is read from the project directory. `code-vm` deliberately trusts no
+file inside a workspace: the workspace is mounted writable and is exactly what
+the agent edits, so anything there is agent-authored input. The host config is
+the whole knob surface.
 
-- `.sandbox-secrets.yaml` — credentials to inject. Secrets resolve on the
-  **host** (where `gopass`/`sops` live), render in the guest, and the payload is
-  wiped. Rendered files are `root:devuser 0444` and deny rules are merged into
-  `settings.json` so the agent cannot read them.
+### Credentials
+
+There is **no credential injection mechanism**. If a build needs a private
+registry, write the credential file into the guest home once — it persists across
+restarts, because the guest disk is the sandbox's durable state:
+
+```bash
+code-vm                                     # shell into the guest
+$ install -d -m 0700 ~/.gradle
+$ cat > ~/.gradle/gradle.properties          # paste, or pipe it in
+```
+
+Assume the agent can read anything you put there, and use credentials created
+for the sandbox rather than your personal ones, so revoking them is cheap.
+
+The previous `.sandbox-secrets.yaml` mechanism was removed rather than fixed. It
+resolved each secret by running its `source:` command **on the host** — from a
+file inside the workspace, which the agent can write. That is host command
+execution reachable from inside the sandbox, which defeats the boundary the whole
+design exists to draw. Its stated protection did not hold either: rendered files
+were group-readable by the agent, and the generated deny rules only matched
+commands where the path appeared as a separate argument, which `python -c` (an
+allowed command) sidesteps.
 
 ### Extending the allowlist
 

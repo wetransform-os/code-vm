@@ -11,7 +11,7 @@ import (
 // in which the agent can substitute its own content (e.g. extra Squid ACLs).
 func TestInstallContentStagesOutsideAgentReach(t *testing.T) {
 	r := &fakeRunner{}
-	d := testDeps(t, r, t.TempDir())
+	d := testDeps(t, r)
 	if err := installContent(context.Background(), d, []byte("body\n"),
 		"/run/sandbox/squid-allow.d/10-host-config.conf", "0444", "root", "root"); err != nil {
 		t.Fatalf("installContent: %v", err)

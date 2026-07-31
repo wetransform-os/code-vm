@@ -10,19 +10,26 @@ correctness angle, then an independent adversarial verifier per candidate
 location. 35 agents; all ten findings below survived verification as
 `CONFIRMED`. Line references were re-checked against the working tree after the
 review completed.
-**Status:** findings 6, 7 and 8 are **fixed** in `7b5209b`; the rest are open.
-Each section below carries its own status line.
+**Status:** findings 6, 7 and 8 are **fixed** in `7b5209b`; finding 2 is **closed
+by removal**. The rest are open. Each section below carries its own status line.
 
-Also noticed while implementing that fix, and **not** covered by the review:
-`.sandbox-secrets.yaml` is read from the agent-writable workspace and its
-`source:` values are executed **on the host** via `bash -c`
-(`internal/session/credentials.go`, `ResolveSecrets` → `ExecHost`). An agent that
-writes that file gets host command execution on the next `code-vm` invocation in
-that directory — the same class as finding 7 but more severe. It is inherited
-from the container sandbox, where `bin/code-sandbox` resolves secrets the same
-way, so it is a pre-existing design property rather than a porting regression.
-Needs its own decision: host-side confirmation on change, a checksum the
-developer approves once, or accepting it and saying so.
+**Plus one issue the review did not surface.** `.sandbox-secrets.yaml` was read
+from the agent-writable workspace and its `source:` values executed **on the
+host** via `bash -c` (`ResolveSecrets` → `ExecHost`), so an agent that wrote that
+file got host command execution on the next `code-vm` invocation in that
+directory — the same class as finding 7 but categorically worse, because it fails
+*outside* the VM boundary rather than inside it. It was inherited from the
+container sandbox, which resolves secrets the same way.
+
+Reviewing it also showed the mechanism's protection did not hold: rendered files
+were `root:devuser 0444`, group-readable by the agent, and the generated deny
+rules only match commands where the path appears as a separate token, which
+`python -c` (allowed by the shipped profile) sidesteps. So the cost was a
+host-execution hole and the benefit was a property that was not true.
+
+**The mechanism was removed** rather than repaired, which also closed finding 2.
+See *Credential injection — removed* in the design doc for what a replacement
+must do differently.
 
 ## The pattern
 
@@ -59,7 +66,14 @@ cheap, targeted change.
 ## 2. Credential deny rules are lost on restart while the secrets persist
 
 **`internal/session/credentials.go:18`**, with the consuming side at
-**`internal/guest/files/scripts/lock-settings.sh:80`** — severity: high
+**`internal/guest/files/scripts/lock-settings.sh:80`** — severity: high —
+**CLOSED BY REMOVAL**
+
+*Resolution:* credential injection was removed entirely (see the status note at
+the top), so there are no deny rules and no rendered credential files whose
+lifetimes could disagree. The `CRED_DENY` branch in `lock-settings.sh` is gone.
+Had the mechanism been kept, this would still have needed a decision between
+persisting the rules and removing the rendered files.
 
 `denyRulesPath` lives under `/run/sandbox-secrets/`, which is tmpfs, but the
 *rendered credential files* are written to the guest disk (`root:devuser 0444`)
@@ -243,17 +257,14 @@ loud warning.
 
 ## Remaining triage order
 
-Findings 6, 7 and 8 are done. What is left, in the order I would take it:
+Findings 6, 7 and 8 are fixed; 2 is closed by removal. What is left, in the order
+I would take it:
 
 1. **4** and **5** — self-verify defects; small, self-contained, and they restore
    guarantees the suite currently only appears to check.
 2. **3** — one-line-class fix that prevents an unusable VM for a large class of
    hosts (any host user whose primary GID collides with a stock guest group).
 3. **1** — drop `-l` from `run_as_agent`; removes an unfiltered-egress channel.
-4. **2** — credential deny-rule lifetime; needs a decision on whether to persist
-   the rules or remove the rendered files.
-5. **10** — re-add the boot-time API reachability warning.
-6. **9** — decide whether CI should run the VM suite now that GitHub runners
+4. **10** — re-add the boot-time API reachability warning.
+5. **9** — decide whether CI should run the VM suite now that GitHub runners
    expose KVM.
-7. The `.sandbox-secrets.yaml` host-execution issue noted at the top of this
-   file, which the review did not surface.

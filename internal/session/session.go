@@ -2,15 +2,16 @@ package session
 
 import "context"
 
-// Setup performs every privileged per-invocation step, in order. Credential
-// rendering is added in Task 8 and must run after ApplyAllowlist, because
-// lock-settings.sh consumes the credential deny rules.
+// Setup performs every privileged per-invocation step.
+//
+// Nothing here reads anything out of the workspace. That is deliberate: the
+// workspace is mounted writable and is exactly what the agent edits, so a file
+// there is agent-authored input. Both mechanisms that used to read one — the
+// per-project allowlist and credential injection — were removed for that
+// reason.
 func Setup(ctx context.Context, d Deps) error {
 	if err := ApplyAllowlist(ctx, d); err != nil {
 		return err
 	}
-	if err := ApplyGitIdentity(ctx, d); err != nil {
-		return err
-	}
-	return ApplyCredentials(ctx, d)
+	return ApplyGitIdentity(ctx, d)
 }

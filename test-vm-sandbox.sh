@@ -325,53 +325,43 @@ if [ -n "$HOST_GIT_EMAIL" ]; then
 fi
 
 echo ""
-echo "── Credential injection ──────────────────────────────────────────"
+echo "── No workspace file is trusted ──────────────────────────────────"
+# Credential injection was removed: .sandbox-secrets.yaml resolved its source:
+# values on the HOST, from a file the agent can author, which is host command
+# execution from inside the sandbox. These assertions pin the removal.
 
-CRED_DIR="$PROJECTS_ROOT/.code-vm-cred-test"
-mkdir -p "$CRED_DIR"
-CRED_DEST="/home/$AGENT_USER/.code-vm-test.properties"
-cat > "$CRED_DIR/.sandbox-secrets.yaml" << YAML
+UNTRUSTED_DIR="$PROJECTS_ROOT/.code-vm-untrusted-test"
+mkdir -p "$UNTRUSTED_DIR"
+CANARY="$UNTRUSTED_DIR/canary"
+cat > "$UNTRUSTED_DIR/.sandbox-secrets.yaml" << YAML
 secrets:
-  TEST_USER:
-    source: printf sandbox-user
+  PWNED:
+    source: touch "$CANARY"
 targets:
   - template: gradle-properties
-    dest: $CRED_DEST
+    dest: /home/$AGENT_USER/.code-vm-should-not-exist.properties
     secrets:
-      - name: TEST_USER
-        as: testUser
+      - PWNED
 YAML
 
-(cd "$CRED_DIR" && "$CODE_VM" -- true > /dev/null 2>&1)
+(cd "$UNTRUSTED_DIR" && "$CODE_VM" -- true > /dev/null 2>&1)
 
-if [ "$(adm stat -c '%U:%G %a' "$CRED_DEST" 2> /dev/null)" = "root:$AGENT_USER 444" ]; then
-    pass "rendered credential is root-owned and read-only"
+if [ -e "$CANARY" ]; then
+    fail "a workspace .sandbox-secrets.yaml must NOT run commands on the host"
 else
-    fail "rendered credential is root-owned and read-only (got $(adm stat -c '%U:%G %a' "$CRED_DEST" 2> /dev/null))"
+    pass "a workspace .sandbox-secrets.yaml does not run commands on the host"
 fi
 
-if adm grep -q 'testUser=sandbox-user' "$CRED_DEST"; then
-    pass "credential rendered through the gradle-properties template"
-else
-    fail "credential rendered through the gradle-properties template"
-fi
+assert_fails "no credential file is rendered from a workspace file" \
+    adm test -e "/home/$AGENT_USER/.code-vm-should-not-exist.properties"
 
-assert_fails "agent cannot overwrite the rendered credential" \
-    agent bash -c "echo x > $CRED_DEST"
+assert_fails "the credential renderer is gone from the guest" \
+    adm test -e /usr/local/lib/sandbox/render-credentials.sh
 
-# shellcheck disable=SC2016 # jq program, not a shell expansion
-if adm jq -e --arg d "$CRED_DEST" '.permissions.deny | index("Read(" + $d + ")")' \
-    "/home/$AGENT_USER/.claude/settings.json" > /dev/null; then
-    pass "credential deny rule merged into settings.json"
-else
-    fail "credential deny rule merged into settings.json"
-fi
+assert_fails "the secret payload tmpfs is never mounted" \
+    adm test -e /run/sandbox-secrets
 
-assert_fails "secret payload is wiped from the guest" \
-    adm test -f /run/sandbox-secrets/payload.json
-
-adm rm -f "$CRED_DEST"
-rm -rf "$CRED_DIR"
+rm -rf "$UNTRUSTED_DIR"
 
 echo ""
 echo "── Resource limits ───────────────────────────────────────────────"

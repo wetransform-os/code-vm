@@ -20,7 +20,6 @@ CONFIG_DST="/home/${AGENT_USER}"
 CLAUDE_DIR="$CONFIG_DST/.claude"
 SETTINGS="$CLAUDE_DIR/settings.json"
 SETTINGS_LOCAL="$CLAUDE_DIR/settings.local.json"
-CRED_DENY=/run/sandbox-secrets/deny-rules.json
 
 if [ ! -d "$CONFIG_SRC" ]; then
     echo "[lock-settings] ERROR: canonical config missing at $CONFIG_SRC"
@@ -74,13 +73,5 @@ fi
 echo '{}' > "$SETTINGS_LOCAL"
 chown "root:${AGENT_USER}" "$SETTINGS_LOCAL"
 chmod 0444 "$SETTINGS_LOCAL"
-
-# Credential deny rules, when a session has injected credentials. Written by
-# code-vm before this script runs; see render-credentials.sh.
-if [ -f "$CRED_DENY" ]; then
-    # shellcheck disable=SC2016 # jq program, not a shell expansion
-    merge_into_settings '.permissions.deny += $extra[0]' --slurpfile extra "$CRED_DENY"
-    echo "[lock-settings] Merged $(jq 'length' "$CRED_DENY") credential deny rules"
-fi
 
 echo "[lock-settings] Config restored from canonical and locked"
