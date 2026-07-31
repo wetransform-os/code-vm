@@ -142,16 +142,24 @@ embedded DNS at `127.0.0.11` inside the RootlessKit network namespace.
 ### Inner-container egress
 
 In the container sandbox, bridged inner containers had no external egress at
-all. In the VM, they can reach the allowlist:
+all. In the VM, Squid is *reachable* from containers, but the proxy environment
+is not injected by default.
 
-Squid binds `127.0.0.1:3128` (for `devuser`'s own traffic) and additionally the
-guest's `eth0` address, resolved at boot. Container proxy environment is set
-via `devuser`'s `~/.config/docker/config.json` `proxies.default`, pointing at
-`http://<guest-ip>:3128`. iptables `INPUT` accepts port 3128 only from Docker
-network ranges and loopback.
+Squid binds port 3128 on all guest interfaces, so a container can reach it at
+the guest's own address. Rootless Docker NATs container traffic out as
+`devuser`, so an explicit iptables rule allows `devuser` to reach
+`<guest-ip>:3128`; everything else still hits the REJECT rule, leaving the
+allowlist as the only path out.
 
-Inner-container traffic that ignores the proxy is NAT'd out under `devuser`'s
-UID and hits the same REJECT rule, so the allowlist remains the only path out.
+Injecting the proxy into containers is opt-in, via the `containerProxy` config
+key (default `false`). When enabled, `devuser`'s
+`~/.config/docker/config.json` sets `proxies.default` to
+`http://<guest-ip>:3128`. It is off by default because Docker applies
+`proxies.default` to `docker run` *and* `docker build`: a bare compose service
+name such as `db` matches no `noProxy` entry, so service-to-service HTTP would
+be routed at Squid and fail — breaking precisely the compose service discovery
+this design exists to fix. Enable it per project when image builds need to
+fetch packages.
 
 ## Guest environment
 
@@ -318,21 +326,27 @@ vm-sandbox/
   internal/config/      # host config: load, defaults, validate
   internal/lima/        # limactl wrapper + template rendering
   internal/session/     # per-invocation setup
-  internal/guest/       # go:embed of guest scripts and Lima template
-  lima/code-sandbox.yaml.tpl
-  guest/
-    provision-system.sh
-    provision-user.sh
-    init-firewall.sh
-    lock-settings.sh
-    render-credentials.sh
-    sandbox-exec
-  config/.claude/settings.json
-  settings-profiles/
-  sandbox-templates/
+  internal/guest/
+    embed.go            # go:embed of files/
+    files/
+      lima/code-sandbox.yaml.tpl
+      scripts/          # provision-system, provision-user-docker,
+                        # sandbox-boot, init-firewall, lock-settings,
+                        # render-credentials, proxy-log, sandbox-exec
+      systemd/sandbox-boot.service
+      config/.claude/settings.json
+      sandbox-templates/
   test-vm-sandbox.sh
   docs/
 ```
+
+The guest assets live *under* `internal/guest/` rather than at the project root
+because `go:embed` cannot reference paths outside its own package directory.
+
+Guest assets are delivered as Lima `mode: data` provision entries with
+`overwrite: true`, which Lima writes before every boot's `mode: system` scripts.
+A `code-vm` upgrade therefore refreshes the guest side on the next start, and
+the binary and the guest scripts cannot fall out of sync.
 
 Adding a subcommand is one file in `internal/cli` plus one register call.
 Adding guest capability is a script in `guest/` plus a step in `internal/session`
