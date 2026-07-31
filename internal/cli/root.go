@@ -34,6 +34,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newMountCmd())
 	root.AddCommand(newRecreateCmd())
 	root.AddCommand(newProxyLogCmd())
+	root.AddCommand(newFirewallCmd())
 	return root
 }
 

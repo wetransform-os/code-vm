@@ -103,6 +103,34 @@ containers — where a bare service name like `db` matches no `noProxy` entry an
 would be routed to Squid, breaking service-to-service traffic. Enable it per
 project only when you need it.
 
+### Firewall modes
+
+```bash
+code-vm firewall              # show the current mode
+code-vm firewall audit        # allow all domains, keep the proxy and the log
+code-vm firewall open --yes   # unfiltered, unlogged agent egress
+code-vm firewall allowlist    # back to the default
+```
+
+The mode is runtime-only and lives in tmpfs, so **restarting the VM always
+reverts to `allowlist`**. There is deliberately no config key: a loosened
+firewall must not become the durable default.
+
+Reach for `audit` first — it solves "the domain I need isn't allowlisted" while
+keeping the access log. `open` exists for tooling that ignores `http_proxy`, and
+gives up the audit trail as well as the filtering.
+
+Two things to keep in mind before loosening it. This VM is shared by every
+workspace you have mounted, under a single agent user, so a loosened firewall
+applies to all of them at once — including credentials injected for other
+projects. And the shipped permission profile allows `python *`, which means the
+firewall is the primary defense against exfiltration; with it open, the
+realistic risk is not you but prompt injection from content the agent reads
+turning into an exfiltration channel.
+
+In every mode the agent still cannot reach host services, and DNS tunneling to
+external resolvers stays blocked.
+
 ## Security model
 
 The perimeter is the VM boundary. Inside it, the agent is separated from guest

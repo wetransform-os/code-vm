@@ -422,12 +422,57 @@ else
 fi
 
 echo ""
+echo "── Firewall modes ────────────────────────────────────────────────"
+
+if "$CODE_VM" firewall | grep -qx allowlist; then
+    pass "default mode is allowlist"
+else
+    fail "default mode is allowlist (got $("$CODE_VM" firewall))"
+fi
+
+assert_fails "mode=open is rejected without confirmation flags" \
+    bash -c "echo n | \"$CODE_VM\" firewall open"
+
+"$CODE_VM" firewall audit > /dev/null
+assert_ok "audit mode reaches a non-allowlisted domain through the proxy" \
+    agent curl -fsS -o /dev/null --max-time 20 https://example.org
+assert_fails "audit mode still forces traffic through the proxy" \
+    agent env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
+    curl -fsS -o /dev/null --max-time 20 https://example.org
+
+"$CODE_VM" firewall open --yes > /dev/null
+assert_ok "open mode allows direct egress without the proxy" \
+    agent env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
+    curl -fsS -o /dev/null --max-time 20 https://example.org
+assert_fails "open mode still blocks DNS tunneling" \
+    agent timeout 10 nslookup example.org 1.1.1.1
+assert_fails "open mode still blocks the host gateway" \
+    agent bash -c 'timeout 5 bash -c "echo > /dev/tcp/$(ip route show default | awk "{print \$3; exit}")/22"'
+
+assert_fails "the agent cannot change the firewall mode" \
+    agent /usr/local/lib/sandbox/set-firewall-mode.sh allowlist
+assert_fails "the agent cannot write the mode file" \
+    agent bash -c 'echo open > /run/sandbox/firewall-mode'
+
+"$CODE_VM" firewall allowlist > /dev/null
+assert_fails "returning to allowlist blocks the domain again" \
+    agent curl -fsS -o /dev/null --max-time 20 https://example.org
+
+echo ""
 echo "── Restart hygiene ───────────────────────────────────────────────"
 # Runs last: it verifies the tmpfs allowlist is cleared, which undoes the
-# widened domain the session-setup section installed.
+# widened domain the session-setup section installed. The audit mode set
+# here must also revert: the mode file lives in tmpfs.
 
+"$CODE_VM" firewall audit > /dev/null
 "$CODE_VM" stop > /dev/null 2>&1
 "$CODE_VM" start > /dev/null 2>&1
+
+if "$CODE_VM" firewall | grep -qx allowlist; then
+    pass "firewall mode reverts to allowlist on VM restart"
+else
+    fail "firewall mode reverts to allowlist on VM restart"
+fi
 
 if [ "$(adm sh -c 'ls /run/sandbox/squid-allow.d | tr "\n" " "')" = "00-base.conf " ]; then
     pass "allowlist fragments are cleared by a VM restart"
