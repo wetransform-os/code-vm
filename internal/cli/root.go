@@ -35,6 +35,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newRecreateCmd())
 	root.AddCommand(newProxyLogCmd())
 	root.AddCommand(newFirewallCmd())
+	root.AddCommand(newAllowCmd())
 	return root
 }
 
@@ -56,6 +57,12 @@ func loadConfig() (config.Config, string, error) {
 	c, err := config.Load(path)
 	if err != nil {
 		return config.Config{}, path, fmt.Errorf("load config: %w", err)
+	}
+	// Checked on every invocation, not just at Validate time: the config is the
+	// only trusted source for the egress allowlist, so a mount that exposes it
+	// to the agent has to be refused before the VM is touched.
+	if err := c.MountsExclude(path); err != nil {
+		return config.Config{}, path, err
 	}
 	return c, path, nil
 }

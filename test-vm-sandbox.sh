@@ -225,33 +225,95 @@ fi
 rm -rf "$COMPOSE_DIR"
 
 echo ""
-echo "── Session setup ─────────────────────────────────────────────────"
-# The widened domain persists for the VM's lifetime, so this section must run
-# AFTER the egress assertions above; the restart-hygiene section at the end
-# verifies the fragment (and the widening) disappears on reboot.
+echo "── Allowlist is host-controlled ──────────────────────────────────"
+# A workspace file must never widen egress. This is the regression guard for
+# dropping .sandbox-domains, whose whole problem was that the agent could
+# author it.
 
 DOMAIN_TEST_DIR="$PROJECTS_ROOT/.code-vm-domains-test"
 mkdir -p "$DOMAIN_TEST_DIR"
 echo ".example.org" > "$DOMAIN_TEST_DIR/.sandbox-domains"
 
-if (cd "$DOMAIN_TEST_DIR" && "$CODE_VM" -- curl -fsS -o /dev/null --max-time 20 https://example.org); then
-    pass "per-workspace .sandbox-domains widens the allowlist"
+if (cd "$DOMAIN_TEST_DIR" && "$CODE_VM" -- curl -fsS -o /dev/null --max-time 20 https://example.org) 2> /dev/null; then
+    fail "a workspace .sandbox-domains file must NOT widen the allowlist"
 else
-    fail "per-workspace .sandbox-domains widens the allowlist"
+    pass "a workspace .sandbox-domains file does not widen the allowlist"
+fi
+rm -rf "$DOMAIN_TEST_DIR"
+
+# The agent must not be able to reach the staging area or the fragment dir.
+assert_fails "agent cannot write the allowlist fragment directory" \
+    agent bash -c 'echo "acl allowed_domains dstdomain .attacker.example" > /run/sandbox/squid-allow.d/99-evil.conf'
+assert_fails "agent cannot read the admin staging directory" \
+    agent ls /home/limaadmin/.code-vm-staging
+
+echo ""
+echo "── code-vm allow ─────────────────────────────────────────────────"
+# Runs after the egress assertions above: it widens the allowlist for the rest
+# of the run, and the restart-hygiene section re-checks the tmpfs behaviour.
+
+CONFIG_FILE="$HOME/.config/code-vm/config.yaml"
+cp "$CONFIG_FILE" "$CONFIG_FILE.suite-backup"
+
+if "$CODE_VM" allow --yes example.org 2>&1 | grep -q 'active now'; then
+    pass "allow reports the domain as applied live"
+else
+    fail "allow reports the domain as applied live"
 fi
 
-FRAGMENTS=$(adm sh -c 'ls /run/sandbox/squid-allow.d')
-if echo "$FRAGMENTS" | grep -q '^10-.*\.conf$'; then
-    pass "workspace fragment is installed"
+if yq -e '.extraDomains | contains([".example.org"])' "$CONFIG_FILE" > /dev/null 2>&1; then
+    pass "allow records the domain in the host config"
 else
-    fail "workspace fragment is installed (got: $(echo "$FRAGMENTS" | tr '\n' ' '))"
+    fail "allow records the domain in the host config (got: $(yq -o=json -I=0 '.extraDomains' "$CONFIG_FILE"))"
 fi
 
-if [ "$(adm stat -c '%U:%G %a' "/run/sandbox/squid-allow.d/$(echo "$FRAGMENTS" | grep '^10-' | head -1)")" = "root:root 444" ]; then
-    pass "fragment is root-owned and read-only"
+assert_ok "the newly allowed domain is reachable without a VM restart" \
+    agent curl -fsS -o /dev/null --max-time 20 https://example.org
+
+if [ "$(adm stat -c '%U:%G %a' /run/sandbox/squid-allow.d/10-host-config.conf)" = "root:root 444" ]; then
+    pass "host-config fragment is root-owned and read-only"
 else
-    fail "fragment is root-owned and read-only"
+    fail "host-config fragment is root-owned and read-only (got $(adm stat -c '%U:%G %a' /run/sandbox/squid-allow.d/10-host-config.conf 2> /dev/null))"
 fi
+
+if "$CODE_VM" allow --yes example.org 2>&1 | grep -q 'already allowed'; then
+    pass "allow is idempotent"
+else
+    fail "allow is idempotent"
+fi
+
+if "$CODE_VM" allow --yes 'sub.example.org' 2>&1 | grep -q 'already allowed'; then
+    pass "allow recognises a domain already covered by a parent entry"
+else
+    fail "allow recognises a domain already covered by a parent entry"
+fi
+
+# Captured, not piped: code-vm exits non-zero here by design, and under
+# pipefail that would fail the pipeline even though grep matched.
+MALFORMED_OUT=$("$CODE_VM" allow --yes 'not a domain' 2>&1)
+if echo "$MALFORMED_OUT" | grep -q 'cannot read a domain'; then
+    pass "allow rejects malformed input"
+else
+    fail "allow rejects malformed input (got: $MALFORMED_OUT)"
+fi
+
+# Removing the domain from the config must take effect, or a revoked domain
+# would stay allowed for the VM's lifetime.
+cp "$CONFIG_FILE.suite-backup" "$CONFIG_FILE"
+"$CODE_VM" -- true > /dev/null 2>&1
+assert_fails "removing the domain from the host config revokes it" \
+    agent curl -fsS -o /dev/null --max-time 20 https://example.org
+rm -f "$CONFIG_FILE.suite-backup"
+
+# A mount that exposes the config would let the agent edit its own allowlist.
+if "$CODE_VM" --config "$CONFIG_FILE" status > /dev/null 2>&1; then
+    pass "status works with the config outside every mount"
+else
+    fail "status works with the config outside every mount"
+fi
+
+echo ""
+echo "── Session setup ─────────────────────────────────────────────────"
 
 HOST_GIT_EMAIL=$(git config --get user.email || true)
 if [ -n "$HOST_GIT_EMAIL" ]; then
@@ -261,8 +323,6 @@ if [ -n "$HOST_GIT_EMAIL" ]; then
         fail "host git identity is seeded into the guest"
     fi
 fi
-
-rm -rf "$DOMAIN_TEST_DIR"
 
 echo ""
 echo "── Credential injection ──────────────────────────────────────────"
@@ -459,11 +519,24 @@ assert_fails "the agent cannot write the mode file" \
 assert_fails "returning to allowlist blocks the domain again" \
     agent curl -fsS -o /dev/null --max-time 20 https://example.org
 
+# A mode switch re-runs init-firewall.sh. It must not truncate the access log:
+# reaching for `firewall audit` to find out what was denied would otherwise
+# erase the evidence.
+LOG_LINES_BEFORE=$(adm sh -c 'wc -l < /var/log/squid/access.log' 2> /dev/null || echo 0)
+"$CODE_VM" firewall audit > /dev/null
+"$CODE_VM" firewall allowlist > /dev/null
+LOG_LINES_AFTER=$(adm sh -c 'wc -l < /var/log/squid/access.log' 2> /dev/null || echo 0)
+if [ "$LOG_LINES_BEFORE" -gt 0 ] && [ "$LOG_LINES_AFTER" -ge "$LOG_LINES_BEFORE" ]; then
+    pass "a firewall mode switch preserves the proxy audit log"
+else
+    fail "a firewall mode switch preserves the proxy audit log (before=$LOG_LINES_BEFORE after=$LOG_LINES_AFTER)"
+fi
+
 echo ""
 echo "── Restart hygiene ───────────────────────────────────────────────"
-# Runs last: it verifies the tmpfs allowlist is cleared, which undoes the
-# widened domain the session-setup section installed. The audit mode set
-# here must also revert: the mode file lives in tmpfs.
+# Runs last: the mode file and the allowlist fragments live in tmpfs, so a
+# restart must revert to allowlist and leave the guest holding only what the
+# host config puts back.
 
 "$CODE_VM" firewall audit > /dev/null
 "$CODE_VM" stop > /dev/null 2>&1
@@ -476,16 +549,35 @@ else
 fi
 
 if [ "$(adm sh -c 'ls /run/sandbox/squid-allow.d | tr "\n" " "')" = "00-base.conf " ]; then
-    pass "allowlist fragments are cleared by a VM restart"
+    pass "guest holds no allowlist fragment the host config did not put there"
 else
-    fail "allowlist fragments are cleared by a VM restart"
+    fail "guest holds no allowlist fragment the host config did not put there (got: $(adm sh -c 'ls /run/sandbox/squid-allow.d | tr "\n" " "'))"
 fi
 
-assert_fails "the previously widened domain is blocked again after restart" \
+assert_fails "a domain absent from the host config is blocked after restart" \
     agent curl -fsS -o /dev/null --max-time 20 https://example.org
 
 assert_ok "settings stay locked after restart" \
     bash -c "[ \"\$(limactl shell $INSTANCE sudo stat -c '%U:%G %a' /home/$AGENT_USER/.claude/settings.json)\" = 'root:$AGENT_USER 444' ]"
+
+# Host-config domains must survive a restart — that is the difference from the
+# tmpfs-only mechanism this replaced. init-firewall.sh writes the fragment at
+# boot from provision.env, so the domain is live before any invocation.
+cp "$CONFIG_FILE" "$CONFIG_FILE.restart-backup"
+"$CODE_VM" allow --yes example.org > /dev/null 2>&1
+"$CODE_VM" stop > /dev/null 2>&1
+"$CODE_VM" start > /dev/null 2>&1
+
+if adm test -f /run/sandbox/squid-allow.d/10-host-config.conf; then
+    pass "host-config fragment is rebuilt at boot"
+else
+    fail "host-config fragment is rebuilt at boot"
+fi
+
+assert_ok "a host-config domain is allowed again after restart" \
+    agent curl -fsS -o /dev/null --max-time 20 https://example.org
+
+mv "$CONFIG_FILE.restart-backup" "$CONFIG_FILE"
 
 echo ""
 echo "================================================================"

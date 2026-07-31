@@ -81,6 +81,70 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+// extraDomains is now the only way to widen the allowlist, and each entry is
+// interpolated straight into a Squid `acl ... dstdomain <entry>` line, so a
+// malformed entry could split into two ACLs or append directives.
+func TestValidateRejectsMalformedDomains(t *testing.T) {
+	good := []string{".example.com", "example.com", "proxy.golang.org", ".sub.example.co.uk", "xn--bcher-kva.example"}
+	for _, d := range good {
+		c := Default()
+		c.ProjectsRoot = "/p"
+		c.ExtraDomains = []string{d}
+		if err := c.Validate(); err != nil {
+			t.Errorf("Validate() rejected valid domain %q: %v", d, err)
+		}
+	}
+	bad := []string{
+		"",
+		"two domains",
+		"has\nnewline",
+		"http://example.com",
+		"example.com/path",
+		"example.com:443",
+		"all\" ; http_access allow all",
+		"-leading-hyphen.com",
+		"..double.dot",
+		"trailing-.com",
+	}
+	for _, d := range bad {
+		c := Default()
+		c.ProjectsRoot = "/p"
+		c.ExtraDomains = []string{d}
+		if err := c.Validate(); err == nil {
+			t.Errorf("Validate() accepted malformed domain %q", d)
+		}
+	}
+}
+
+// The host config is the only trusted input to the allowlist. That holds only
+// as long as it is not itself reachable from inside the guest.
+func TestMountsExcludeRejectsSharedConfig(t *testing.T) {
+	cfgPath := "/home/st/.config/code-vm/config.yaml"
+	tests := []struct {
+		name    string
+		mounts  []string
+		wantErr bool
+	}{
+		{"unrelated projects root", []string{"/home/st/projects"}, false},
+		{"home itself shared", []string{"/home/st"}, true},
+		{"config dir shared", []string{"/home/st/.config"}, true},
+		{"exact config dir shared", []string{"/home/st/.config/code-vm"}, true},
+		{"sibling dotdir is fine", []string{"/home/st/.cache"}, false},
+		{"extra mount covers it", []string{"/home/st/projects", "/home/st"}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Default()
+			c.ProjectsRoot = tc.mounts[0]
+			c.ExtraMounts = tc.mounts[1:]
+			err := c.MountsExclude(cfgPath)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("MountsExclude() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestSaveRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "config.yaml")
 	c := Default()

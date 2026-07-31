@@ -190,31 +190,7 @@ func ApplyCredentials(ctx context.Context, d Deps) error {
 		body []byte
 		dst  string
 	}{{payload, payloadPath}, {deny, denyRulesPath}} {
-		tmp, err := os.CreateTemp("", "code-vm-cred-*")
-		if err != nil {
-			return fmt.Errorf("create temp credential file: %w", err)
-		}
-		if err := os.Chmod(tmp.Name(), 0o600); err != nil {
-			tmp.Close()
-			os.Remove(tmp.Name())
-			return fmt.Errorf("chmod temp credential file: %w", err)
-		}
-		_, werr := tmp.Write(f.body)
-		tmp.Close()
-		if werr != nil {
-			os.Remove(tmp.Name())
-			return fmt.Errorf("write temp credential file: %w", werr)
-		}
-		staged := "/tmp/" + filepath.Base(tmp.Name())
-		cerr := d.Client.Copy(ctx, tmp.Name(), staged)
-		os.Remove(tmp.Name())
-		if cerr != nil {
-			return cerr
-		}
-		if err := d.Client.Admin(ctx, []string{"install", "-m", "0400", "-o", "root", "-g", "root", staged, f.dst}); err != nil {
-			return err
-		}
-		if err := d.Client.Admin(ctx, []string{"rm", "-f", staged}); err != nil {
+		if err := installContent(ctx, d, f.body, f.dst, "0400", "root", "root"); err != nil {
 			return err
 		}
 	}

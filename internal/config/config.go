@@ -13,6 +13,13 @@ import (
 // sizeRe matches Lima-style size strings such as "12GiB" or "512MiB".
 var sizeRe = regexp.MustCompile(`^[0-9]+(B|KiB|MiB|GiB|TiB)$`)
 
+// domainRe matches an allowlist entry: a hostname, optionally prefixed with a
+// dot to mean "this domain and all subdomains". Entries are interpolated into
+// Squid `acl allowed_domains dstdomain <entry>` lines, so anything that could
+// split the line or start a new directive — whitespace, quotes, semicolons,
+// schemes, ports, paths — must be rejected here rather than reaching squid.conf.
+var domainRe = regexp.MustCompile(`^\.?[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$`)
+
 // Config is the code-vm host configuration. It is the entire knob surface:
 // the Lima instance is rendered from it, so the VM shape stays reproducible.
 type Config struct {
@@ -100,6 +107,34 @@ func (c Config) Validate() error {
 	}
 	if !sizeRe.MatchString(c.Disk) {
 		return fmt.Errorf("disk must look like \"100GiB\", got %q", c.Disk)
+	}
+	for i, d := range c.ExtraDomains {
+		if err := ValidateDomain(d); err != nil {
+			return fmt.Errorf("extraDomains[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// ValidateDomain reports whether d is usable as an allowlist entry.
+func ValidateDomain(d string) error {
+	if !domainRe.MatchString(d) {
+		return fmt.Errorf("not a valid domain: %q (expected e.g. %q or %q)", d, "registry.example.com", ".example.com")
+	}
+	return nil
+}
+
+// MountsExclude reports an error if any shared directory would expose path
+// inside the guest. The host config is the only trusted input to the egress
+// allowlist, which holds only while the agent cannot write it: sharing $HOME
+// or ~/.config would hand the agent control of its own firewall.
+func (c Config) MountsExclude(path string) error {
+	p := filepath.Clean(path)
+	if m, ok := CoveringMount(c.Mounts(), p); ok {
+		return fmt.Errorf(
+			"shared directory %s would expose the code-vm config (%s) to the agent, "+
+				"which could then widen its own egress allowlist; narrow projectsRoot or the extra mount",
+			m, p)
 	}
 	return nil
 }

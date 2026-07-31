@@ -72,23 +72,39 @@ DEFAULT_DOMAINS=(
 )
 
 DOMAIN_LIST=("${DEFAULT_DOMAINS[@]}")
-if [ -n "${EXTRA_ALLOWED_DOMAINS:-}" ]; then
-    read -ra EXTRA <<< "$EXTRA_ALLOWED_DOMAINS"
-    [ ${#EXTRA[@]} -gt 0 ] && DOMAIN_LIST+=("${EXTRA[@]}")
-fi
 
 # ── Fragment directory ──────────────────────────────────────────────────────
-# Per-workspace allowlists live here, written by code-vm session setup. It is
-# tmpfs-backed, so stale entries from projects no longer in use cannot widen
-# the allowlist beyond one VM lifetime. 00-base.conf is always present so the
-# wildcard include never matches an empty set.
+# Extra domains from the host config land here rather than in the baked list
+# above, so that `code-vm allow` can rewrite exactly this file and reload Squid
+# without a restart — one source of truth in the guest, no duplicate ACLs.
+# The directory is tmpfs-backed, so guest state cannot drift from the host
+# config: after a reboot it holds only what code-vm pushes back.
+# 00-base.conf is always present so the wildcard include never matches an
+# empty set.
 # /run is already a tmpfs on a systemd guest, so fragments and the firewall
 # mode file disappear on reboot without an explicit mount. Do NOT mount a tmpfs
 # here: it would shadow anything written to /run/sandbox earlier in the boot,
 # including the mode file this script reads.
 install -d -m 0755 "$FRAGMENT_DIR"
-printf '# base fragment; per-workspace fragments are added by code-vm\n' > "$FRAGMENT_DIR/00-base.conf"
+printf '# base fragment; host-config domains are added by code-vm\n' > "$FRAGMENT_DIR/00-base.conf"
 chmod 0444 "$FRAGMENT_DIR/00-base.conf"
+
+# Boot-time application of the host config's extraDomains. code-vm rewrites
+# this same path on later invocations; the name must stay in sync with
+# session.HostFragmentName.
+if [ -n "${EXTRA_ALLOWED_DOMAINS:-}" ]; then
+    read -ra EXTRA <<< "$EXTRA_ALLOWED_DOMAINS"
+    if [ ${#EXTRA[@]} -gt 0 ]; then
+        {
+            echo "# code-vm allowlist fragment rendered from the host config"
+            for domain in "${EXTRA[@]}"; do
+                echo "acl allowed_domains dstdomain $domain"
+            done
+        } > "$FRAGMENT_DIR/10-host-config.conf"
+        chmod 0444 "$FRAGMENT_DIR/10-host-config.conf"
+        echo "[firewall]   Host-config domains: ${EXTRA[*]}"
+    fi
+fi
 
 # ── squid.conf ──────────────────────────────────────────────────────────────
 # Order matters: Squid reads linearly, so every `acl allowed_domains` line —
@@ -108,7 +124,7 @@ chmod 0444 "$FRAGMENT_DIR/00-base.conf"
             echo "acl allowed_domains dstdomain $domain"
         done
         echo ""
-        echo "# Per-workspace fragments (tmpfs; cleared on every boot)"
+        echo "# Host-config fragments (tmpfs; cleared on every boot)"
         echo "include $FRAGMENT_DIR/*.conf"
         echo ""
         echo "acl CONNECT method CONNECT"
@@ -126,7 +142,13 @@ echo "[firewall] Generated $SQUID_CONF (${#DOMAIN_LIST[@]} base entries)"
 # ── Start Squid ─────────────────────────────────────────────────────────────
 # World-readable log dir so proxy-log works without granting write access.
 chmod o+rx /var/log/squid/
-install -m 0644 -o proxy -g proxy /dev/null /var/log/squid/access.log
+# Create the log only when absent. This script re-runs on every firewall mode
+# switch, and truncating here would destroy the audit trail the user is most
+# likely trying to inspect — reaching for `code-vm firewall audit` to find out
+# what was denied must not erase what was denied.
+if [ ! -f /var/log/squid/access.log ]; then
+    install -m 0644 -o proxy -g proxy /dev/null /var/log/squid/access.log
+fi
 systemctl enable squid.service > /dev/null 2>&1 || true
 systemctl restart squid.service
 

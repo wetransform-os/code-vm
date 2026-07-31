@@ -295,9 +295,9 @@ Every default invocation performs four steps:
    later boots are a few seconds).
 2. Verify `$PWD` is under a declared mount. If not, report that and suggest
    `code-vm mount`.
-3. Privileged session setup as `limaadmin`: refresh this workspace's Squid
-   allowlist fragment from its `.sandbox-domains`, reload Squid if it changed,
-   render `.sandbox-secrets.yaml` credentials, seed git identity from the host's
+3. Privileged session setup as `limaadmin`: refresh the Squid allowlist fragment
+   from the host config's `extraDomains`, reload Squid if it changed, render
+   `.sandbox-secrets.yaml` credentials, seed git identity from the host's
    `git config user.name/user.email`.
 4. Exec the command as `devuser` at the same path:
    `limactl shell --workdir "$PWD" code-sandbox sudo /usr/local/bin/sandbox-exec …`
@@ -332,14 +332,45 @@ so.
 
 ### Squid allowlist fragments
 
-Per-workspace `.sandbox-domains` files are compiled into fragments under
-`/run/sandbox/squid-allow.d/`, included by the main Squid config via a wildcard
-`include`. A `00-base.conf` fragment is always written at boot so the wildcard
-never matches an empty set. Squid is reloaded with `squid -k reconfigure` by
-`limaadmin` during session setup when a fragment changes.
+**Revised during implementation.** The design originally compiled per-workspace
+`.sandbox-domains` files into fragments. That was dropped: the workspace is
+mounted writable and is exactly what the agent edits, so a domain file there let
+the agent widen its own egress — the exfiltration channel the firewall exists to
+prevent. A code review confirmed it as a live issue rather than a theoretical
+one.
 
-The directory is tmpfs-backed, so it is empty on every boot. Stale entries from
-projects no longer in use cannot widen the allowlist beyond one VM lifetime.
+The host config's `extraDomains` is now the only source. It lives outside every
+mount, so the agent cannot reach it, and `code-vm` refuses to run when a mount
+would expose it. Entries are validated against a domain pattern before they can
+reach `squid.conf`.
+
+Extra domains are rendered into a single fragment,
+`/run/sandbox/squid-allow.d/10-host-config.conf`, included by the main Squid
+config via a wildcard `include`; `00-base.conf` is always written at boot so the
+wildcard never matches an empty set. `init-firewall.sh` writes the fragment at
+boot from `provision.env`, and session setup (plus `code-vm allow`) rewrites it
+whenever the host config differs, reloading with `squid -k reconfigure` — a few
+milliseconds, without dropping connections.
+
+Writing the extra domains to a fragment rather than into the generated
+`squid.conf` is deliberate: `init-firewall.sh` regenerates that file from scratch
+on every firewall mode switch, so ACL lines edited into it directly would vanish
+the first time someone ran `code-vm firewall audit`. The fragment survives
+regeneration because the `include` is preserved and only `00-base.conf` is
+overwritten. (The container sandbox's `code-sandbox-allow` does edit `squid.conf`
+in place; it has no mode switching, so the problem never arises there.)
+
+The directory is tmpfs-backed, so the guest cannot drift from the host config:
+after a reboot it holds only what `code-vm` puts back.
+
+### Extending the allowlist at runtime
+
+`code-vm allow [domain ...]` appends to `extraDomains` and applies the change
+live. With no arguments it parses the denied entries out of the Squid access log
+and offers each one, mirroring `code-sandbox-allow`'s log-driven mode. Because
+the log drives this, `init-firewall.sh` creates `access.log` only when it is
+absent — truncating on every run would have erased the evidence a user reaches
+for `firewall audit` to inspect.
 
 ### Credential injection
 
@@ -438,14 +469,19 @@ This split should be revisited once a KVM-capable runner is available.
 
 These are consequences of the decisions above, not oversights:
 
-- **No `--privileged` inner containers**, no arbitrary `sysctl`s in containers,
-  no host networking. This is the cost of rootless dockerd, accepted in exchange
-  for genuine separation between the agent and guest root.
+- **`--privileged` grants nothing outside the user namespace.** Corrected during
+  implementation: rootless dockerd *accepts* the flag rather than refusing it,
+  but the capabilities are confined to the daemon's user namespace — a privileged
+  container still cannot write host kernel state or reach guest root. Workloads
+  needing real privileges (arbitrary `sysctl`s, host networking) do not work.
+  This is the cost of rootless dockerd, accepted in exchange for genuine
+  separation between the agent and guest root.
 - **No cross-project isolation.** A single agent user with all workspaces
   mounted means project A's agent can read project B's tree and B's injected
   credentials.
-- **Union allowlist.** The Squid allowlist is the union of allowlists of all
-  projects used during the VM's current lifetime.
+- **One allowlist for every workspace.** One agent user and one Squid, so a
+  domain allowed for one project is allowed for all of them. Projects cannot
+  declare their own domains (see *Squid allowlist fragments*).
 - **Mounts require a VM restart.** Lima declares mounts in the instance config.
 - **Guest root is reachable from the host** by anyone who can run `limactl` —
   that is, the developer, never the agent.

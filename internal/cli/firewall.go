@@ -2,11 +2,14 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/wetransform/code-vm/internal/lima"
 )
 
 // firewallModes are the supported egress modes, loosest last.
@@ -26,6 +29,22 @@ func setFirewallModeArgs(mode string) ([]string, error) {
 		return nil, err
 	}
 	return []string{"/usr/local/lib/sandbox/set-firewall-mode.sh", mode}, nil
+}
+
+// currentFirewallMode reads the mode init-firewall.sh recorded in its verify
+// file. Shared with `code-vm allow`, which reports whether a new domain took
+// effect live or only once allowlist mode returns.
+func currentFirewallMode(ctx context.Context, cl lima.Client) (string, error) {
+	verify, err := cl.AdminOutput(ctx, []string{"cat", "/run/firewall-verify"})
+	if err != nil {
+		return "", fmt.Errorf("read firewall state: %w", err)
+	}
+	for _, line := range splitLines(string(verify)) {
+		if strings.HasPrefix(line, "FIREWALL_MODE=") {
+			return strings.TrimPrefix(line, "FIREWALL_MODE="), nil
+		}
+	}
+	return "", fmt.Errorf("firewall mode not reported; is the VM running?")
 }
 
 func newFirewallCmd() *cobra.Command {
@@ -49,17 +68,12 @@ func newFirewallCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 
 			if len(args) == 0 {
-				verify, err := cl.AdminOutput(cmd.Context(), []string{"cat", "/run/firewall-verify"})
+				mode, err := currentFirewallMode(cmd.Context(), cl)
 				if err != nil {
-					return fmt.Errorf("read firewall state: %w", err)
+					return err
 				}
-				for _, line := range splitLines(string(verify)) {
-					if strings.HasPrefix(line, "FIREWALL_MODE=") {
-						fmt.Fprintln(out, strings.TrimPrefix(line, "FIREWALL_MODE="))
-						return nil
-					}
-				}
-				return fmt.Errorf("firewall mode not reported; is the VM running?")
+				fmt.Fprintln(out, mode)
+				return nil
 			}
 
 			mode := args[0]

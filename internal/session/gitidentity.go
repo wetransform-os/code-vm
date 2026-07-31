@@ -3,7 +3,6 @@ package session
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 )
@@ -47,26 +46,6 @@ func ApplyGitIdentity(ctx context.Context, d Deps) error {
 		return nil
 	}
 
-	tmp, err := os.CreateTemp("", "code-vm-gitconfig-*")
-	if err != nil {
-		return fmt.Errorf("create temp gitconfig: %w", err)
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(GitConfigContent(name, email)); err != nil {
-		tmp.Close()
-		return fmt.Errorf("write temp gitconfig: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp gitconfig: %w", err)
-	}
-
-	staged := "/tmp/code-vm-gitconfig"
-	if err := d.Client.Copy(ctx, tmp.Name(), staged); err != nil {
-		return err
-	}
 	dst := "/home/" + d.AgentUser + "/.gitconfig"
-	if err := d.Client.Admin(ctx, []string{"install", "-m", "0644", "-o", d.AgentUser, "-g", d.AgentUser, staged, dst}); err != nil {
-		return err
-	}
-	return d.Client.Admin(ctx, []string{"rm", "-f", staged})
+	return installContent(ctx, d, []byte(GitConfigContent(name, email)), dst, "0644", d.AgentUser, d.AgentUser)
 }

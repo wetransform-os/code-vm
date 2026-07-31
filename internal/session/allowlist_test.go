@@ -4,66 +4,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/wetransform/code-vm/internal/config"
 	"github.com/wetransform/code-vm/internal/lima"
 )
-
-func TestReadDomains(t *testing.T) {
-	dir := t.TempDir()
-	body := "# a comment\n\nregistry.example.com\n  .internal.example  \nregistry.example.com\n"
-	if err := os.WriteFile(filepath.Join(dir, ".sandbox-domains"), []byte(body), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	got, err := ReadDomains(dir)
-	if err != nil {
-		t.Fatalf("ReadDomains: %v", err)
-	}
-	want := []string{"registry.example.com", ".internal.example"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("ReadDomains = %v, want %v (comments and blanks dropped, trimmed, de-duplicated in first-seen order)", got, want)
-	}
-}
-
-func TestReadDomainsMissingFileIsEmpty(t *testing.T) {
-	got, err := ReadDomains(t.TempDir())
-	if err != nil {
-		t.Fatalf("ReadDomains: %v", err)
-	}
-	if len(got) != 0 {
-		t.Errorf("ReadDomains = %v, want empty", got)
-	}
-}
-
-func TestFragmentNameIsStableAndWorkspaceSpecific(t *testing.T) {
-	a := FragmentName("/home/st/projects/one")
-	b := FragmentName("/home/st/projects/two")
-	if a != FragmentName("/home/st/projects/one") {
-		t.Error("FragmentName must be stable for the same workspace")
-	}
-	if a == b {
-		t.Error("different workspaces must get different fragments")
-	}
-	if !strings.HasPrefix(a, "10-") || !strings.HasSuffix(a, ".conf") {
-		t.Errorf("FragmentName = %q, want 10-<hash>.conf", a)
-	}
-}
-
-func TestFragmentContentEmitsOneACLPerDomain(t *testing.T) {
-	got := FragmentContent("/home/st/projects/one", []string{"a.example", ".b.example"})
-	if !strings.Contains(got, "acl allowed_domains dstdomain a.example\n") {
-		t.Error("missing ACL line for a.example")
-	}
-	if !strings.Contains(got, "acl allowed_domains dstdomain .b.example\n") {
-		t.Error("missing ACL line for .b.example")
-	}
-	if !strings.Contains(got, "/home/st/projects/one") {
-		t.Error("fragment should record which workspace it came from")
-	}
-}
 
 type fakeRunner struct {
 	calls [][]string
@@ -96,20 +42,41 @@ func testDeps(t *testing.T, r lima.Runner, ws string) Deps {
 	return Deps{Client: lima.Client{R: r}, Config: c, Workspace: ws, AgentUser: "devuser"}
 }
 
-func TestApplyAllowlistInstallsFragmentAndReloadsSquid(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".sandbox-domains"), []byte("registry.example.com\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
+func fragmentPath() string { return fragmentDir + "/" + HostFragmentName }
+
+func TestFragmentContentEmitsOneACLPerDomain(t *testing.T) {
+	got := FragmentContent([]string{"a.example", ".b.example"})
+	if !strings.Contains(got, "acl allowed_domains dstdomain a.example\n") {
+		t.Error("missing ACL line for a.example")
 	}
+	if !strings.Contains(got, "acl allowed_domains dstdomain .b.example\n") {
+		t.Error("missing ACL line for .b.example")
+	}
+}
+
+// The fragment name is shared with init-firewall.sh, which writes it at boot.
+// A rename on one side without the other would leave two fragments live.
+func TestHostFragmentNameSortsAfterBase(t *testing.T) {
+	if HostFragmentName <= "00-base.conf" {
+		t.Errorf("HostFragmentName = %q, must sort after 00-base.conf", HostFragmentName)
+	}
+	if !strings.HasSuffix(HostFragmentName, ".conf") {
+		t.Errorf("HostFragmentName = %q, must match the wildcard include", HostFragmentName)
+	}
+}
+
+func TestApplyAllowlistInstallsFragmentAndReloadsSquid(t *testing.T) {
 	r := &fakeRunner{}
-	if err := ApplyAllowlist(context.Background(), testDeps(t, r, dir)); err != nil {
+	d := testDeps(t, r, t.TempDir())
+	d.Config.ExtraDomains = []string{"registry.example.com"}
+	if err := ApplyAllowlist(context.Background(), d); err != nil {
 		t.Fatalf("ApplyAllowlist: %v", err)
 	}
 	if !r.ranAny("copy") {
 		t.Error("fragment must be copied into the guest")
 	}
-	if !r.ranAny("install") {
-		t.Error("fragment must be installed into the allowlist directory as root")
+	if !r.ranAny("install -m 0444 -o root -g root") {
+		t.Error("fragment must be installed root-owned and read-only")
 	}
 	if !r.ranAny("squid -k reconfigure") {
 		t.Error("Squid must be reloaded after the allowlist changes")
@@ -117,16 +84,12 @@ func TestApplyAllowlistInstallsFragmentAndReloadsSquid(t *testing.T) {
 }
 
 func TestApplyAllowlistSkipsReloadWhenUnchanged(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".sandbox-domains"), []byte("registry.example.com\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	d := testDeps(t, nil, dir)
-	existing := FragmentContent(dir, []string{"registry.example.com"})
+	existing := FragmentContent([]string{"registry.example.com"})
 	r := &fakeRunner{out: map[string][]byte{
-		strings.Join(lima.Client{}.AdminArgs([]string{"cat", "/run/sandbox/squid-allow.d/" + FragmentName(dir)}), " "): []byte(existing),
+		strings.Join(lima.Client{}.AdminArgs([]string{"cat", fragmentPath()}), " "): []byte(existing),
 	}}
-	d.Client = lima.Client{R: r}
+	d := testDeps(t, r, t.TempDir())
+	d.Config.ExtraDomains = []string{"registry.example.com"}
 	if err := ApplyAllowlist(context.Background(), d); err != nil {
 		t.Fatalf("ApplyAllowlist: %v", err)
 	}
@@ -135,12 +98,52 @@ func TestApplyAllowlistSkipsReloadWhenUnchanged(t *testing.T) {
 	}
 }
 
-func TestApplyAllowlistNoDomainsIsNoOp(t *testing.T) {
+func TestApplyAllowlistNoDomainsAndNoFragmentIsNoOp(t *testing.T) {
 	r := &fakeRunner{}
-	if err := ApplyAllowlist(context.Background(), testDeps(t, r, t.TempDir())); err != nil {
+	d := testDeps(t, r, t.TempDir())
+	if err := ApplyAllowlist(context.Background(), d); err != nil {
 		t.Fatalf("ApplyAllowlist: %v", err)
 	}
-	if len(r.calls) != 0 {
-		t.Errorf("expected no guest calls without a .sandbox-domains file, got %v", r.calls)
+	if r.ranAny("copy") || r.ranAny("squid -k reconfigure") {
+		t.Errorf("expected only the state read, got %v", r.calls)
+	}
+}
+
+// Removing the last domain from the config has to take effect, or a revoked
+// domain would stay allowed for the rest of the VM's lifetime.
+func TestApplyAllowlistRemovesFragmentWhenDomainsCleared(t *testing.T) {
+	r := &fakeRunner{out: map[string][]byte{
+		strings.Join(lima.Client{}.AdminArgs([]string{"cat", fragmentPath()}), " "): []byte(
+			FragmentContent([]string{"registry.example.com"})),
+	}}
+	d := testDeps(t, r, t.TempDir())
+	d.Config.ExtraDomains = nil
+	if err := ApplyAllowlist(context.Background(), d); err != nil {
+		t.Fatalf("ApplyAllowlist: %v", err)
+	}
+	if !r.ranAny("rm -f " + fragmentPath()) {
+		t.Errorf("stale fragment must be removed, got %v", r.calls)
+	}
+	if !r.ranAny("squid -k reconfigure") {
+		t.Error("Squid must be reloaded after removing the fragment")
+	}
+}
+
+// The workspace is agent-writable; a domain file there must not influence the
+// allowlist. This is the regression guard for dropping .sandbox-domains.
+func TestApplyAllowlistIgnoresWorkspaceDomainFiles(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{".sandbox-domains", "sandbox-domains", ".code-vm-domains"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("attacker.example\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	r := &fakeRunner{}
+	d := testDeps(t, r, dir)
+	if err := ApplyAllowlist(context.Background(), d); err != nil {
+		t.Fatalf("ApplyAllowlist: %v", err)
+	}
+	if r.ranAny("copy") || r.ranAny("attacker.example") {
+		t.Errorf("workspace files must never reach the allowlist, got %v", r.calls)
 	}
 }

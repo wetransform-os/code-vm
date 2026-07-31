@@ -67,6 +67,7 @@ code-vm                          # interactive shell
 | `code-vm mount <dir>` | Share another host directory (restarts the VM) |
 | `code-vm recreate` | Delete and rebuild the guest from scratch |
 | `code-vm proxy-log [all\|denied\|allowed\|follow]` | Read the Squid access log |
+| `code-vm allow [domain...]` | Add domains to the allowlist and apply them live |
 | `code-vm doctor` | Check host prerequisites |
 
 ## Configuration
@@ -87,12 +88,35 @@ containerProxy: false         # see below
 
 Per-project extras live in the project directory:
 
-- `.sandbox-domains` — extra allowed domains for that project. Compiled into a
-  Squid fragment in tmpfs, so it is forgotten when the VM restarts.
 - `.sandbox-secrets.yaml` — credentials to inject. Secrets resolve on the
   **host** (where `gopass`/`sops` live), render in the guest, and the payload is
   wiped. Rendered files are `root:devuser 0444` and deny rules are merged into
   `settings.json` so the agent cannot read them.
+
+### Extending the allowlist
+
+```bash
+code-vm allow                        # offer everything Squid recently denied
+code-vm allow registry.example.com   # add specific domains
+code-vm allow --yes ghcr.example     # no confirmation prompt
+```
+
+`code-vm allow` writes accepted domains to `extraDomains` in the host config and
+pushes them to Squid immediately — no VM restart, `squid -k reconfigure` takes a
+few milliseconds and does not drop connections. With no arguments it reads the
+denied entries from the proxy log, which is the quickest way to find what a
+build actually needs.
+
+The host config is the **only** source for the allowlist, deliberately. It lives
+outside every mount, so the agent cannot reach it; `code-vm` refuses to start if
+a mount would expose it. There is no per-project domain file: the agent can
+write anything inside the workspace, so a domain file there would let it widen
+its own egress — the exfiltration channel the firewall exists to prevent.
+Domains a project needs belong in its README, or in each developer's config.
+
+Removing a domain from the config revokes it on the next invocation; the guest
+fragment is rewritten to match, rather than keeping stale entries alive for the
+VM's lifetime.
 
 ### `containerProxy`
 
@@ -150,8 +174,8 @@ These are consequences of the design, not oversights:
   the agent and guest root.
 - **No cross-project isolation.** One agent user with all workspaces mounted
   means one project's agent can read another's tree and injected credentials.
-- **Union allowlist.** The allowlist is the union of every project used during
-  the VM's current lifetime.
+- **One allowlist for every workspace.** There is a single agent user and a
+  single Squid, so a domain allowed for one project is allowed for all of them.
 - **Mounts need a VM restart**, because Lima declares them in the instance
   config.
 - **Guest root is reachable from the host** by anyone who can run `limactl` —
