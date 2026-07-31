@@ -1,0 +1,31 @@
+[tools]
+go = "1.26.5"
+golangci-lint = "2.12.2"
+shellcheck = "0.11.0"
+shfmt = "3.13.1"
+
+[tasks.build]
+description = "Build the code-vm binary"
+run = "go build -o dist/code-vm ./cmd/code-vm"
+
+[tasks."test:unit"]
+description = "Run Go unit tests"
+run = "go test ./..."
+
+[tasks."test:vm"]
+description = "Run the VM integration suite (requires KVM)"
+run = "bash test-vm-sandbox.sh"
+
+[tasks.lint]
+description = "Lint Go and shell sources"
+run = [
+  "golangci-lint run",
+  "shellcheck internal/guest/files/scripts/*.sh internal/guest/files/scripts/sandbox-exec test-vm-sandbox.sh",
+]
+
+[tasks."fmt-check"]
+description = "Verify formatting"
+run = [
+  "test -z \"$(gofmt -l .)\"",
+  "shfmt -d internal/guest/files/scripts",
+]
