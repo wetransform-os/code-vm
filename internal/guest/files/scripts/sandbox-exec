@@ -1,6 +1,39 @@
 #!/bin/bash
+###############################################################################
+# sandbox-exec — drop from root to the agent user, preserving cwd
+#
+# Invoked as `sudo /usr/local/bin/sandbox-exec <cmd...>` by code-vm. Sources
+# /etc/environment because `limactl shell` starts a non-login shell that would
+# never read it, then hands off to the agent user.
+#
+# Note: setpriv is deliberately used WITHOUT --reset-env, so the proxy and
+# DOCKER_HOST values sourced below survive into the agent's process.
+###############################################################################
+set -euo pipefail
+
+# shellcheck source=/dev/null
+. /etc/sandbox/provision.env
+
 set -a
 # shellcheck source=/dev/null
 [ -f /etc/environment ] && . /etc/environment
 set +a
-exec "$@"
+
+cmd=("$@")
+if [ ${#cmd[@]} -eq 0 ]; then
+    cmd=(bash -l)
+fi
+
+# Already unprivileged (e.g. invoked directly by the agent): just exec.
+if [ "$(id -u)" -ne 0 ]; then
+    exec "${cmd[@]}"
+fi
+
+exec setpriv --reuid "$AGENT_UID" --regid "$AGENT_GID" --init-groups \
+    env \
+    HOME="/home/${AGENT_USER}" \
+    USER="$AGENT_USER" \
+    LOGNAME="$AGENT_USER" \
+    XDG_RUNTIME_DIR="/run/user/${AGENT_UID}" \
+    PATH="/home/${AGENT_USER}/.local/bin:/home/${AGENT_USER}/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+    "${cmd[@]}"

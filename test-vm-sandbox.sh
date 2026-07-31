@@ -7,7 +7,8 @@
 set -uo pipefail
 
 INSTANCE=code-sandbox
-CODE_VM=./dist/code-vm
+# Absolute path: several assertions cd elsewhere before invoking it.
+CODE_VM="$(pwd)/dist/code-vm"
 AGENT_USER=devuser
 
 PASS=0
@@ -26,8 +27,8 @@ fail() {
 # Run a command as root in the guest.
 adm() { limactl shell "$INSTANCE" sudo "$@"; }
 
-# Run a command as the agent user in the guest.
-agent() { limactl shell "$INSTANCE" sudo /usr/local/bin/sandbox-exec "$@"; }
+# Run a command as the agent user through the real CLI.
+agent() { "$CODE_VM" -- "$@"; }
 
 assert_ok() {
     local desc="$1"
@@ -92,6 +93,51 @@ if adm test -S "/run/user/$(id -u)/docker.sock"; then
     pass "rootless docker socket exists at the agent's runtime dir"
 else
     fail "rootless docker socket exists at the agent's runtime dir"
+fi
+
+echo ""
+echo "── Exec path ─────────────────────────────────────────────────────"
+
+if [ "$(agent id -u)" = "$(id -u)" ]; then
+    pass "code-vm runs as the agent user with the host UID"
+else
+    fail "code-vm runs as the agent user with the host UID"
+fi
+
+if [ "$(agent id -un)" = "$AGENT_USER" ]; then
+    pass "code-vm runs as $AGENT_USER"
+else
+    fail "code-vm runs as $AGENT_USER (got $(agent id -un))"
+fi
+
+WORK_SUBDIR="$PROJECTS_ROOT/.code-vm-test-cwd"
+mkdir -p "$WORK_SUBDIR"
+if [ "$(cd "$WORK_SUBDIR" && agent pwd)" = "$WORK_SUBDIR" ]; then
+    pass "working directory is preserved into the guest"
+else
+    fail "working directory is preserved into the guest"
+fi
+rmdir "$WORK_SUBDIR"
+
+if agent env | grep -q '^DOCKER_HOST=unix:///run/user/'; then
+    pass "DOCKER_HOST is exported to the agent"
+else
+    fail "DOCKER_HOST is exported to the agent"
+fi
+
+if agent env | grep -q '^https_proxy=http://localhost:3128$'; then
+    pass "proxy env is exported to the agent"
+else
+    fail "proxy env is exported to the agent"
+fi
+
+# Captured first: code-vm exits non-zero here by design, and under pipefail
+# that would fail the pipeline even though grep matches.
+UNCOVERED_OUT=$( (cd /tmp && "$CODE_VM" -- true) 2>&1 )
+if echo "$UNCOVERED_OUT" | grep -q "code-vm mount"; then
+    pass "running outside a shared directory fails with actionable advice"
+else
+    fail "running outside a shared directory fails with actionable advice"
 fi
 
 echo ""

@@ -21,6 +21,10 @@ func NewRootCmd() *cobra.Command {
 			"directory: that directory becomes the working directory in the guest.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDefault(cmd.Context(), args)
+		},
 	}
 	root.PersistentFlags().StringVar(&configPath, "config", "", "path to config.yaml (default ~/.config/code-vm/config.yaml)")
 	root.AddCommand(newDoctorCmd())
