@@ -67,10 +67,12 @@ func NewClient() Client {
 }
 
 // AgentArgs builds the argv that runs cmd as the agent user in workdir.
-// sandbox-exec sources /etc/environment and then drops from limaadmin to the
-// agent user, preserving the working directory.
+// sandbox-exec sources /etc/environment, drops from root to the agent user
+// and only then changes into workdir. `limactl shell --workdir` is not used:
+// it would cd as limaadmin before sudo, which fails for 0700 directories the
+// agent owns (observed with mktemp -d workspaces).
 func (c Client) AgentArgs(workdir string, cmd []string) []string {
-	args := []string{"shell", "--workdir", workdir, InstanceName, "sudo", "/usr/local/bin/sandbox-exec"}
+	args := []string{"shell", InstanceName, "sudo", "/usr/local/bin/sandbox-exec", "--workdir", workdir}
 	return append(args, cmd...)
 }
 
@@ -108,6 +110,30 @@ func (c Client) Status(ctx context.Context) (string, error) {
 // Start creates or starts the instance from the rendered template.
 func (c Client) Start(ctx context.Context, tplPath string) error {
 	return c.R.Run(ctx, "start", "--tty=false", "--name", InstanceName, tplPath)
+}
+
+// StartExisting boots an already-created instance from its stored config.
+// `limactl start --name <name> <file>` refuses to run when the instance
+// exists, so updates go through ResolveConfigInto first.
+func (c Client) StartExisting(ctx context.Context) error {
+	return c.R.Run(ctx, "start", "--tty=false", InstanceName)
+}
+
+// InstanceDir returns the instance's data directory on the host.
+func (c Client) InstanceDir(ctx context.Context) (string, error) {
+	out, err := c.R.Output(ctx, "list", InstanceName, "--format", "{{.Dir}}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// ResolveConfigInto resolves a rendered template into a self-contained
+// instance config at dst. Instance configs must have `base` resolved into
+// concrete fields (observed: a stored config with `base:` fails validation
+// with "field base must be empty"), which --embed-all performs.
+func (c Client) ResolveConfigInto(ctx context.Context, src, dst string) error {
+	return c.R.Run(ctx, "template", "copy", "--embed-all", src, dst)
 }
 
 // Stop shuts the instance down.

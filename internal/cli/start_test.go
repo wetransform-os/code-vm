@@ -55,6 +55,35 @@ func TestEnsureRunningStartsWhenAbsentOrStopped(t *testing.T) {
 	}
 }
 
+// An existing instance cannot be started with a template argument (limactl
+// refuses with "already exists"), so the stopped path must replace the stored
+// config via `template copy --embed-all` and then start by name.
+func TestEnsureRunningUpdatesStoredConfigWhenStopped(t *testing.T) {
+	r := &recordingRunner{statusOut: "Stopped"}
+	if err := ensureRunning(context.Background(), lima.Client{R: r}, testCfg(t)); err != nil {
+		t.Fatalf("ensureRunning: %v", err)
+	}
+	var sawResolve, sawPlainStart bool
+	for _, call := range r.calls {
+		joined := strings.Join(call, " ")
+		if strings.HasPrefix(joined, "template copy --embed-all ") && strings.HasSuffix(joined, "/lima.yaml") {
+			sawResolve = true
+		}
+		if joined == "start --tty=false code-sandbox" {
+			sawPlainStart = true
+		}
+		if strings.HasPrefix(joined, "start --tty=false --name") {
+			t.Errorf("must not pass a template to an existing instance, got %v", call)
+		}
+	}
+	if !sawResolve {
+		t.Errorf("expected the stored config to be replaced via template copy, calls=%v", r.calls)
+	}
+	if !sawPlainStart {
+		t.Errorf("expected a plain start by instance name, calls=%v", r.calls)
+	}
+}
+
 func TestEnsureRunningIsNoOpWhenRunning(t *testing.T) {
 	r := &recordingRunner{statusOut: "Running"}
 	if err := ensureRunning(context.Background(), lima.Client{R: r}, testCfg(t)); err != nil {

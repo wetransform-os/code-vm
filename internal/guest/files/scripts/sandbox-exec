@@ -1,10 +1,14 @@
 #!/bin/bash
 ###############################################################################
-# sandbox-exec — drop from root to the agent user, preserving cwd
+# sandbox-exec — drop from root to the agent user, then enter the workdir
 #
-# Invoked as `sudo /usr/local/bin/sandbox-exec <cmd...>` by code-vm. Sources
-# /etc/environment because `limactl shell` starts a non-login shell that would
-# never read it, then hands off to the agent user.
+# Invoked as `sudo /usr/local/bin/sandbox-exec [--workdir DIR] <cmd...>` by
+# code-vm. Sources /etc/environment because `limactl shell` starts a non-login
+# shell that would never read it, then hands off to the agent user.
+#
+# The working directory is entered AFTER the privilege drop: 0700 workspace
+# directories belong to the agent, and neither limaadmin nor an early cd as
+# root would model the agent's own access.
 #
 # Note: setpriv is deliberately used WITHOUT --reset-env, so the proxy and
 # DOCKER_HOST values sourced below survive into the agent's process.
@@ -19,6 +23,12 @@ set -a
 [ -f /etc/environment ] && . /etc/environment
 set +a
 
+workdir=""
+if [ "${1:-}" = "--workdir" ] && [ $# -ge 2 ]; then
+    workdir="$2"
+    shift 2
+fi
+
 cmd=("$@")
 if [ ${#cmd[@]} -eq 0 ]; then
     cmd=(bash -l)
@@ -26,7 +36,22 @@ fi
 
 # Already unprivileged (e.g. invoked directly by the agent): just exec.
 if [ "$(id -u)" -ne 0 ]; then
+    if [ -n "$workdir" ]; then
+        cd "$workdir"
+    fi
     exec "${cmd[@]}"
+fi
+
+if [ -n "$workdir" ]; then
+    # shellcheck disable=SC2016 # the inner bash -c program expands its own args
+    exec setpriv --reuid "$AGENT_UID" --regid "$AGENT_GID" --init-groups \
+        env \
+        HOME="/home/${AGENT_USER}" \
+        USER="$AGENT_USER" \
+        LOGNAME="$AGENT_USER" \
+        XDG_RUNTIME_DIR="/run/user/${AGENT_UID}" \
+        PATH="/home/${AGENT_USER}/.local/bin:/home/${AGENT_USER}/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+        bash -c 'cd "$1" || exit 1; shift; exec "$@"' _ "$workdir" "${cmd[@]}"
 fi
 
 exec setpriv --reuid "$AGENT_UID" --regid "$AGENT_GID" --init-groups \

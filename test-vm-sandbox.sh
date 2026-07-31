@@ -323,6 +323,43 @@ else
 fi
 
 echo ""
+echo "── Lifecycle commands ────────────────────────────────────────────"
+
+assert_ok "status reports the running instance" \
+    bash -c "\"$CODE_VM\" status | grep -q 'code-sandbox (Running)'"
+assert_ok "status shows the firewall verification" \
+    bash -c "\"$CODE_VM\" status | grep -q 'OUTPUT_POLICY=DROP'"
+assert_ok "proxy-log denied mode runs" "$CODE_VM" proxy-log denied
+assert_fails "proxy-log rejects an unknown mode" "$CODE_VM" proxy-log everything
+
+# code-vm mount rewrites ~/.config/code-vm/config.yaml, so the temp mount is
+# removed from the config again below. The VM keeps the stale mount until its
+# next restart, which is harmless.
+# Output is captured, not piped into grep -q: an early-exiting grep closes
+# the pipe and SIGPIPEs limactl mid-restart, and pipefail would fail the
+# pipeline on code-vm's own exit status.
+MOUNT_TEST_DIR=$(mktemp -d)
+MOUNT_OUT=$("$CODE_VM" mount "$MOUNT_TEST_DIR" 2>&1)
+if echo "$MOUNT_OUT" | grep -q "Added"; then
+    pass "mount adds a new shared directory"
+else
+    fail "mount adds a new shared directory"
+fi
+if (cd "$MOUNT_TEST_DIR" && "$CODE_VM" -- pwd | grep -qx "$MOUNT_TEST_DIR"); then
+    pass "newly mounted directory is usable as a workspace"
+else
+    fail "newly mounted directory is usable as a workspace"
+fi
+MOUNT_OUT=$("$CODE_VM" mount "$MOUNT_TEST_DIR" 2>&1)
+if echo "$MOUNT_OUT" | grep -q "already shared"; then
+    pass "mount is idempotent"
+else
+    fail "mount is idempotent"
+fi
+yq -i 'del(.extraMounts[] | select(. == "'"$MOUNT_TEST_DIR"'"))' "$HOME/.config/code-vm/config.yaml"
+rmdir "$MOUNT_TEST_DIR"
+
+echo ""
 echo "── Host exposure ─────────────────────────────────────────────────"
 
 # The portForwards ignore rule must cover wildcard binds: without guestIP

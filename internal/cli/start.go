@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -59,9 +60,12 @@ func renderInstanceFile(c config.Config) (string, error) {
 }
 
 // ensureRunning brings the sandbox VM up if it is not already running.
-// The rendered template is passed on every start, so a code-vm upgrade or a
+// The rendered config is applied on every start, so a code-vm upgrade or a
 // config change is picked up without a separate migration step: the
-// mode:data guest files carry overwrite: true.
+// mode:data guest files carry overwrite: true. An absent instance is created
+// from the rendered template; an existing one cannot be started with a
+// template argument (limactl refuses), so its stored config is replaced with
+// a freshly resolved render first.
 func ensureRunning(ctx context.Context, cl lima.Client, c config.Config) error {
 	if err := c.Validate(); err != nil {
 		return err
@@ -78,7 +82,20 @@ func ensureRunning(ctx context.Context, cl lima.Client, c config.Config) error {
 		return err
 	}
 	defer os.Remove(path)
-	return cl.Start(ctx, path)
+	if status == "" {
+		return cl.Start(ctx, path)
+	}
+	dir, err := cl.InstanceDir(ctx)
+	if err != nil {
+		return err
+	}
+	if dir == "" {
+		return fmt.Errorf("cannot locate the %s instance directory", lima.InstanceName)
+	}
+	if err := cl.ResolveConfigInto(ctx, path, filepath.Join(dir, "lima.yaml")); err != nil {
+		return err
+	}
+	return cl.StartExisting(ctx)
 }
 
 func newStartCmd() *cobra.Command {

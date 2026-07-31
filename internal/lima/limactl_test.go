@@ -23,12 +23,16 @@ func (f *fakeRunner) Output(_ context.Context, args ...string) ([]byte, error) {
 	return f.out, f.outErr
 }
 
+// The workdir travels to sandbox-exec, not to `limactl shell --workdir`:
+// the latter would cd as limaadmin before sudo, and a 0700 directory owned
+// by the agent is unreachable for limaadmin.
 func TestAgentArgsRunsThroughSandboxExecAsDevuser(t *testing.T) {
 	c := Client{R: &fakeRunner{}}
 	got := c.AgentArgs("/home/st/projects/repo", []string{"claude", "-p", "fix the bug"})
 	want := []string{
-		"shell", "--workdir", "/home/st/projects/repo", InstanceName,
-		"sudo", "/usr/local/bin/sandbox-exec", "claude", "-p", "fix the bug",
+		"shell", InstanceName,
+		"sudo", "/usr/local/bin/sandbox-exec", "--workdir", "/home/st/projects/repo",
+		"claude", "-p", "fix the bug",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("AgentArgs() = %v, want %v", got, want)
