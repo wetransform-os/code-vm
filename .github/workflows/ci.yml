@@ -1,5 +1,9 @@
 name: ci
 
+# The VM suite (mise run test:vm) is deliberately absent: it needs nested KVM,
+# which GitHub-hosted runners do not reliably provide. Run it locally or add a
+# KVM-capable self-hosted runner and a second job that calls it.
+
 on:
   push:
   pull_request:

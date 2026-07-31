@@ -323,6 +323,57 @@ else
 fi
 
 echo ""
+echo "── Workspace file ownership ──────────────────────────────────────"
+
+OWN_DIR="$PROJECTS_ROOT/.code-vm-own-test"
+mkdir -p "$OWN_DIR"
+echo host > "$OWN_DIR/from-host"
+
+if [ "$(adm stat -c '%u' "$OWN_DIR/from-host")" = "$(id -u)" ]; then
+    pass "host-created file is owned by the agent UID in the guest"
+else
+    fail "host-created file is owned by the agent UID in the guest"
+fi
+
+(cd "$OWN_DIR" && agent bash -c 'echo guest > from-guest')
+if [ -f "$OWN_DIR/from-guest" ] && [ "$(stat -c '%u' "$OWN_DIR/from-guest")" = "$(id -u)" ]; then
+    pass "guest-created file is owned by the host user on the host"
+else
+    fail "guest-created file is owned by the host user on the host"
+fi
+
+rm -rf "$OWN_DIR"
+
+echo ""
+echo "── Testcontainers primitives ─────────────────────────────────────"
+
+AGENT_SOCK="/run/user/$(id -u)/docker.sock"
+
+assert_ok "Docker API responds over DOCKER_HOST" \
+    agent docker version --format '{{.Server.Version}}'
+
+assert_ok "the daemon socket can be bind-mounted into a container" \
+    agent docker run --rm -v "$AGENT_SOCK:/var/run/docker.sock" docker:cli docker version
+
+if agent docker run -d --rm --name code-vm-ryuk \
+    -v "$AGENT_SOCK:/var/run/docker.sock" \
+    -e RYUK_PORT=8080 testcontainers/ryuk:0.14.0 > /dev/null 2>&1; then
+    pass "Ryuk starts (it is incompatible with rootless Podman, which is why this exists)"
+    agent docker rm -f code-vm-ryuk > /dev/null 2>&1
+else
+    fail "Ryuk starts"
+fi
+
+agent docker run -d --rm --name code-vm-ports -p 18080:80 nginx:alpine > /dev/null 2>&1
+sleep 3
+if agent curl -fsS -o /dev/null --max-time 10 --noproxy 127.0.0.1 http://127.0.0.1:18080; then
+    pass "published container ports are reachable inside the guest"
+else
+    fail "published container ports are reachable inside the guest"
+fi
+agent docker rm -f code-vm-ports > /dev/null 2>&1
+
+echo ""
 echo "── Lifecycle commands ────────────────────────────────────────────"
 
 assert_ok "status reports the running instance" \
@@ -369,6 +420,26 @@ if ss -tln 2> /dev/null | grep -q ':3128 '; then
 else
     pass "guest Squid port is not forwarded to the host"
 fi
+
+echo ""
+echo "── Restart hygiene ───────────────────────────────────────────────"
+# Runs last: it verifies the tmpfs allowlist is cleared, which undoes the
+# widened domain the session-setup section installed.
+
+"$CODE_VM" stop > /dev/null 2>&1
+"$CODE_VM" start > /dev/null 2>&1
+
+if [ "$(adm sh -c 'ls /run/sandbox/squid-allow.d | tr "\n" " "')" = "00-base.conf " ]; then
+    pass "allowlist fragments are cleared by a VM restart"
+else
+    fail "allowlist fragments are cleared by a VM restart"
+fi
+
+assert_fails "the previously widened domain is blocked again after restart" \
+    agent curl -fsS -o /dev/null --max-time 20 https://example.org
+
+assert_ok "settings stay locked after restart" \
+    bash -c "[ \"\$(limactl shell $INSTANCE sudo stat -c '%U:%G %a' /home/$AGENT_USER/.claude/settings.json)\" = 'root:$AGENT_USER 444' ]"
 
 echo ""
 echo "================================================================"
