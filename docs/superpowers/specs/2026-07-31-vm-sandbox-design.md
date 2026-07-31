@@ -50,7 +50,7 @@ daemon.
 | VM stack | Lima v2.2.0 (QEMU/KVM on Linux, `vz` on macOS) |
 | Guest Docker | Rootless dockerd, running as the agent user |
 | Security perimeter | VM boundary, plus in-guest privilege separation |
-| Egress filtering | In-guest Squid + iptables, as in the container sandbox |
+| Egress filtering | In-guest Squid + iptables, as in the container sandbox; runtime-switchable modes |
 | VM lifecycle | One shared long-lived VM |
 | Guest isolation | Single agent user; all mounted workspaces visible to it |
 | Workspace sharing | virtiofs mount of a configured projects root, plus on-demand additions |
@@ -138,6 +138,42 @@ deleted outright rather than ported:
 
 Bridge networks and compose service discovery work natively through dockerd's
 embedded DNS at `127.0.0.11` inside the RootlessKit network namespace.
+
+### Firewall modes
+
+The egress policy is switchable at runtime, because the two things that
+legitimately make an allowlist painful have different answers:
+
+| Mode | Squid | iptables | Audit log | Fixes |
+|---|---|---|---|---|
+| `allowlist` (default) | domain allowlist | default-deny, proxy mandatory | yes | — |
+| `audit` | allow all | default-deny, proxy mandatory | yes | a domain that is not allowlisted |
+| `open` | allow all | agent TCP permitted directly | no | tooling that ignores `http_proxy` |
+
+`init-firewall.sh` already regenerates `squid.conf` and every iptables rule from
+scratch on each run, so a mode switch is just reapplying it with a different
+parameter.
+
+Constraints that hold in every mode: the agent cannot reach host services (the
+host-gateway REJECT survives), DNS tunneling to external resolvers stays
+blocked, and the agent cannot change the mode itself — it has no sudo, and the
+switch runs through `limaadmin`.
+
+Two deliberate restrictions on the loosening:
+
+- **The mode is runtime-only.** It lives in `/run/sandbox/firewall-mode`, which
+  is tmpfs, so a VM restart always reverts to `allowlist`. There is no config
+  key: a loosened firewall must not be able to become the durable default.
+- **`open` requires explicit confirmation**, because it gives up the audit trail
+  as well as the filtering.
+
+The risk that makes this worth stating rather than assuming: the VM is shared by
+every mounted workspace under a single agent user, so a loosened firewall applies
+to all of them simultaneously, including credentials injected for other
+projects. The shipped permission profile allows `python *`, which makes the
+firewall the primary defense against exfiltration — so with it open, the
+realistic threat is not the developer but prompt injection from content the agent
+reads becoming an exfiltration channel.
 
 ### Inner-container egress
 
@@ -413,6 +449,9 @@ These are consequences of the decisions above, not oversights:
 - **Mounts require a VM restart.** Lima declares mounts in the instance config.
 - **Guest root is reachable from the host** by anyone who can run `limactl` —
   that is, the developer, never the agent.
+- **A loosened firewall is VM-wide.** `audit` and `open` apply to every mounted
+  workspace at once, because there is one agent user. Mitigated by reverting on
+  restart, not by scoping.
 
 ## Implementation sequencing
 
@@ -426,3 +465,4 @@ Rough order; the implementation plan will refine it.
 5. Credential injection.
 6. Remaining subcommands: `mount`, `status`, `stop`, `recreate`, `proxy-log`.
 7. Test suite and `mise` tasks.
+8. Runtime firewall modes (`code-vm firewall`).

@@ -2831,11 +2831,11 @@ fi
 # tmpfs-backed, so stale entries from projects no longer in use cannot widen
 # the allowlist beyond one VM lifetime. 00-base.conf is always present so the
 # wildcard include never matches an empty set.
-mount | grep -q " /run/sandbox " || {
-    install -d /run/sandbox
-    mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run/sandbox
-}
-install -d -m 0755 "$FRAGMENT_DIR"
+# /run is already a tmpfs on a systemd guest, so fragments and the firewall
+# mode file disappear on reboot without an explicit mount. Do NOT mount a tmpfs
+# here: it would shadow anything written to /run/sandbox earlier in the boot,
+# including the mode file this script reads (see Task 11).
+install -d -m 0755 /run/sandbox "$FRAGMENT_DIR"
 printf '# base fragment; per-workspace fragments are added by code-vm\n' > "$FRAGMENT_DIR/00-base.conf"
 chmod 0444 "$FRAGMENT_DIR/00-base.conf"
 
@@ -5053,6 +5053,427 @@ decisions rather than left to be discovered."
 
 ---
 
+### Task 11: On-demand firewall modes
+
+**Depends on:** Tasks 6 and 9. If you are implementing Task 6 and this task in
+the same pass, read this task first and write the mode parameter into
+`init-firewall.sh` from the start rather than adding it afterwards.
+
+**Files:**
+- Modify: `internal/guest/files/scripts/init-firewall.sh` (read and honour a mode)
+- Create: `internal/guest/files/scripts/set-firewall-mode.sh`
+- Create: `internal/cli/firewall.go`
+- Modify: `internal/cli/root.go` (register the command)
+- Test: `internal/cli/firewall_test.go`, `test-vm-sandbox.sh`
+
+**Interfaces:**
+- Consumes: `lima.Client.Admin`, `lima.Client.AdminOutput`, `cli.newClient`.
+- Produces:
+  - `cli.firewallModes = []string{"allowlist", "audit", "open"}`
+  - `cli.validateFirewallMode(mode string) error`
+  - `cli.setFirewallModeArgs(mode string) ([]string, error)` — guest command for a mode change
+  - `code-vm firewall [allowlist|audit|open]`, no argument reports the current mode
+  - `/run/sandbox/firewall-mode` — the mode file, read by `init-firewall.sh`, absent means `allowlist`
+  - `FIREWALL_MODE=<mode>` added to `/run/firewall-verify`
+
+**Mode semantics:**
+
+| Mode | Squid | iptables | Audit log | Fixes |
+|---|---|---|---|---|
+| `allowlist` | domain allowlist | default-deny, proxy mandatory | yes | — |
+| `audit` | allow all | default-deny, proxy mandatory | yes | a domain that is not allowlisted |
+| `open` | allow all (bypassable) | agent TCP permitted directly; UDP still dropped except DNS | no | tooling that ignores `http_proxy` |
+
+The agent-to-host-gateway REJECT survives in every mode: `open` means the
+internet is open, not that host services are. The UDP drop survives too, so DNS
+tunneling stays blocked at no cost.
+
+- [ ] **Step 1: Write the failing tests**
+
+`internal/cli/firewall_test.go`:
+
+```go
+package cli
+
+import (
+	"reflect"
+	"strings"
+	"testing"
+)
+
+func TestValidateFirewallMode(t *testing.T) {
+	for _, mode := range firewallModes {
+		if err := validateFirewallMode(mode); err != nil {
+			t.Errorf("validateFirewallMode(%q) = %v, want nil", mode, err)
+		}
+	}
+	for _, mode := range []string{"", "off", "disabled", "ALLOWLIST"} {
+		if err := validateFirewallMode(mode); err == nil {
+			t.Errorf("validateFirewallMode(%q) = nil, want an error", mode)
+		}
+	}
+}
+
+func TestValidateFirewallModeErrorListsValidModes(t *testing.T) {
+	err := validateFirewallMode("off")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	for _, mode := range firewallModes {
+		if !strings.Contains(err.Error(), mode) {
+			t.Errorf("error should list %q as a valid mode, got %q", mode, err)
+		}
+	}
+}
+
+func TestSetFirewallModeArgs(t *testing.T) {
+	got, err := setFirewallModeArgs("audit")
+	if err != nil {
+		t.Fatalf("setFirewallModeArgs: %v", err)
+	}
+	want := []string{"/usr/local/lib/sandbox/set-firewall-mode.sh", "audit"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("setFirewallModeArgs = %v, want %v", got, want)
+	}
+	if _, err := setFirewallModeArgs("off"); err == nil {
+		t.Error("expected an error for an invalid mode")
+	}
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `mise run test:unit`
+Expected: FAIL — `undefined: firewallModes`, `undefined: validateFirewallMode`.
+
+- [ ] **Step 3: Teach `init-firewall.sh` about modes**
+
+Three edits to `internal/guest/files/scripts/init-firewall.sh`.
+
+First, after the `VERIFY_FILE` assignment, read the mode:
+
+```bash
+MODE_FILE=/run/sandbox/firewall-mode
+
+# The mode file lives in /run, which is tmpfs, so a reboot always reverts to
+# the allowlist. There is deliberately no config key for this: a loosened
+# firewall must not be able to become the durable default.
+install -d -m 0755 /run/sandbox
+MODE=allowlist
+if [ -r "$MODE_FILE" ]; then
+    MODE=$(tr -d '[:space:]' < "$MODE_FILE")
+fi
+case "$MODE" in
+    allowlist | audit | open) ;;
+    *)
+        echo "[firewall] WARNING: unknown mode '$MODE'; falling back to allowlist"
+        MODE=allowlist
+        ;;
+esac
+echo "[firewall] Mode: $MODE"
+```
+
+Second, replace the `http_access` section of the generated `squid.conf` so
+non-allowlist modes allow everything while still logging:
+
+```bash
+    if [ "$MODE" = allowlist ]; then
+        echo "# Domain allowlist — .domain matches the domain and all subdomains"
+        for domain in "${DOMAIN_LIST[@]}"; do
+            echo "acl allowed_domains dstdomain $domain"
+        done
+        echo ""
+        echo "# Per-workspace fragments (tmpfs; cleared on every boot)"
+        echo "include $FRAGMENT_DIR/*.conf"
+        echo ""
+        echo "acl CONNECT method CONNECT"
+        echo "http_access allow CONNECT allowed_domains"
+        echo "http_access allow allowed_domains"
+        echo "http_access deny all"
+    else
+        echo "# mode=$MODE: domain filtering disabled; the proxy remains an audit log"
+        echo "http_access allow all"
+    fi
+```
+
+Third, in the iptables section, add the `open` rule immediately after the
+agent-to-gateway REJECT and before the Anthropic CIDR accept:
+
+```bash
+# mode=open: let the agent reach the internet directly, for tooling that
+# ignores http_proxy. Placed after the UDP drop and the gateway REJECT, so
+# neither DNS tunneling nor host access is opened up.
+if [ "$MODE" = open ]; then
+    iptables -A OUTPUT -m owner --uid-owner "$AGENT_UID" -j ACCEPT
+    echo "[firewall]   mode=open: agent egress is UNFILTERED and UNLOGGED"
+fi
+```
+
+Finally, add the mode to the verify file, inside the existing block:
+
+```bash
+    echo "FIREWALL_MODE=$MODE"
+```
+
+The existing `VERIFY_OK` checks stay valid in every mode: the `OUTPUT` policy is
+still `DROP`, the UDP drop and proxy-UID rules are still appended, and the
+agent-gateway REJECT is still present.
+
+- [ ] **Step 4: Write `set-firewall-mode.sh`**
+
+Create `internal/guest/files/scripts/set-firewall-mode.sh`:
+
+```bash
+#!/bin/bash
+###############################################################################
+# set-firewall-mode.sh — switch the egress firewall mode and reapply it
+#
+# Runs as root, invoked by code-vm through limaadmin. The agent has no sudo and
+# therefore cannot call this.
+#
+# The mode file lives in /run (tmpfs), so a VM restart always reverts to
+# allowlist.
+###############################################################################
+set -euo pipefail
+
+MODE=${1:-}
+case "$MODE" in
+    allowlist | audit | open) ;;
+    *)
+        echo "usage: set-firewall-mode.sh [allowlist|audit|open]" >&2
+        exit 2
+        ;;
+esac
+
+install -d -m 0755 /run/sandbox
+printf '%s\n' "$MODE" > /run/sandbox/firewall-mode
+chmod 0444 /run/sandbox/firewall-mode
+
+# init-firewall.sh regenerates squid.conf and every iptables rule from scratch,
+# so reapplying it is the whole mode switch.
+exec /usr/local/lib/sandbox/init-firewall.sh
+```
+
+- [ ] **Step 5: Implement `internal/cli/firewall.go`**
+
+```go
+package cli
+
+import (
+	"bufio"
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/spf13/cobra"
+)
+
+// firewallModes are the supported egress modes, loosest last.
+var firewallModes = []string{"allowlist", "audit", "open"}
+
+func validateFirewallMode(mode string) error {
+	for _, m := range firewallModes {
+		if mode == m {
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown firewall mode %q; want one of: %s", mode, strings.Join(firewallModes, ", "))
+}
+
+func setFirewallModeArgs(mode string) ([]string, error) {
+	if err := validateFirewallMode(mode); err != nil {
+		return nil, err
+	}
+	return []string{"/usr/local/lib/sandbox/set-firewall-mode.sh", mode}, nil
+}
+
+func newFirewallCmd() *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "firewall [allowlist|audit|open]",
+		Short: "Show or change the egress firewall mode",
+		Long: "Show or change the egress firewall mode.\n\n" +
+			"  allowlist  domain allowlist, proxy mandatory (default)\n" +
+			"  audit      all domains allowed, proxy still mandatory, still logged\n" +
+			"  open       agent egress unfiltered and unlogged\n\n" +
+			"The mode is runtime-only and lives in tmpfs: restarting the VM always\n" +
+			"reverts to allowlist. There is no config key for it on purpose.\n\n" +
+			"Note that the VM is shared by every workspace you have mounted, so a\n" +
+			"loosened firewall applies to all of them at once, including any\n" +
+			"injected credentials.",
+		Args:      cobra.MaximumNArgs(1),
+		ValidArgs: firewallModes,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cl := newClient()
+			out := cmd.OutOrStdout()
+
+			if len(args) == 0 {
+				verify, err := cl.AdminOutput(cmd.Context(), []string{"cat", "/run/firewall-verify"})
+				if err != nil {
+					return fmt.Errorf("read firewall state: %w", err)
+				}
+				for _, line := range splitLines(string(verify)) {
+					if strings.HasPrefix(line, "FIREWALL_MODE=") {
+						fmt.Fprintln(out, strings.TrimPrefix(line, "FIREWALL_MODE="))
+						return nil
+					}
+				}
+				return fmt.Errorf("firewall mode not reported; is the VM running?")
+			}
+
+			mode := args[0]
+			guestCmd, err := setFirewallModeArgs(mode)
+			if err != nil {
+				return err
+			}
+			if mode == "open" && !yes {
+				fmt.Fprint(out,
+					"mode=open removes egress filtering AND the audit log for every\n"+
+						"workspace mounted in this VM, including injected credentials.\n"+
+						"It reverts on the next VM restart. Continue? [y/N] ")
+				line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+				if strings.ToLower(strings.TrimSpace(line)) != "y" {
+					return fmt.Errorf("aborted")
+				}
+			}
+			if err := cl.Admin(cmd.Context(), guestCmd); err != nil {
+				return err
+			}
+			fmt.Fprintf(out, "Firewall mode is now %s (reverts to allowlist on VM restart).\n", mode)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt for mode=open")
+	return cmd
+}
+```
+
+Register it in `NewRootCmd`:
+
+```go
+	root.AddCommand(newFirewallCmd())
+```
+
+`splitLines` already exists in `internal/cli/status.go` from Task 9; reuse it
+rather than adding a second copy.
+
+- [ ] **Step 6: Add VM assertions**
+
+Append to `test-vm-sandbox.sh`, immediately before the restart-hygiene section
+(which already restarts the VM and will clean up whatever mode is left set):
+
+```bash
+echo ""
+echo "── Firewall modes ────────────────────────────────────────────────"
+
+if "$CODE_VM" firewall | grep -qx allowlist; then
+    pass "default mode is allowlist"
+else
+    fail "default mode is allowlist (got $("$CODE_VM" firewall))"
+fi
+
+assert_fails "mode=open is rejected without confirmation flags" \
+    bash -c "echo n | \"$CODE_VM\" firewall open"
+
+"$CODE_VM" firewall audit > /dev/null
+assert_ok "audit mode reaches a non-allowlisted domain through the proxy" \
+    agent curl -fsS -o /dev/null --max-time 20 https://example.org
+assert_fails "audit mode still forces traffic through the proxy" \
+    agent env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
+        curl -fsS -o /dev/null --max-time 20 https://example.org
+
+"$CODE_VM" firewall open --yes > /dev/null
+assert_ok "open mode allows direct egress without the proxy" \
+    agent env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
+        curl -fsS -o /dev/null --max-time 20 https://example.org
+assert_fails "open mode still blocks DNS tunneling" \
+    agent timeout 10 nslookup example.org 1.1.1.1
+assert_fails "open mode still blocks the host gateway" \
+    agent bash -c 'timeout 5 bash -c "echo > /dev/tcp/$(ip route show default | awk "{print \$3; exit}")/22"'
+
+assert_fails "the agent cannot change the firewall mode" \
+    agent /usr/local/lib/sandbox/set-firewall-mode.sh allowlist
+assert_fails "the agent cannot write the mode file" \
+    agent bash -c 'echo open > /run/sandbox/firewall-mode'
+
+"$CODE_VM" firewall allowlist > /dev/null
+assert_fails "returning to allowlist blocks the domain again" \
+    agent curl -fsS -o /dev/null --max-time 20 https://example.org
+```
+
+Also extend the existing restart-hygiene section with a mode-revert assertion:
+
+```bash
+"$CODE_VM" firewall audit > /dev/null
+"$CODE_VM" stop > /dev/null 2>&1
+"$CODE_VM" start > /dev/null 2>&1
+if "$CODE_VM" firewall | grep -qx allowlist; then
+    pass "firewall mode reverts to allowlist on VM restart"
+else
+    fail "firewall mode reverts to allowlist on VM restart"
+fi
+```
+
+- [ ] **Step 7: Document the modes in the README**
+
+Add to `README.md`, after the `containerProxy` section:
+
+```markdown
+### Firewall modes
+
+```bash
+code-vm firewall              # show the current mode
+code-vm firewall audit        # allow all domains, keep the proxy and the log
+code-vm firewall open --yes   # unfiltered, unlogged agent egress
+code-vm firewall allowlist    # back to the default
+```
+
+The mode is runtime-only and lives in tmpfs, so **restarting the VM always
+reverts to `allowlist`**. There is deliberately no config key: a loosened
+firewall must not become the durable default.
+
+Reach for `audit` first — it solves "the domain I need isn't allowlisted" while
+keeping the access log. `open` exists for tooling that ignores `http_proxy`, and
+gives up the audit trail as well as the filtering.
+
+Two things to keep in mind before loosening it. This VM is shared by every
+workspace you have mounted, under a single agent user, so a loosened firewall
+applies to all of them at once — including credentials injected for other
+projects. And the shipped permission profile allows `python *`, which means the
+firewall is the primary defense against exfiltration; with it open, the
+realistic risk is not you but prompt injection from content the agent reads
+turning into an exfiltration channel.
+
+In every mode the agent still cannot reach host services, and DNS tunneling to
+external resolvers stays blocked.
+```
+
+- [ ] **Step 8: Run the tests and commit**
+
+Run: `mise run test:unit && mise run lint && mise run fmt-check`
+Expected: PASS.
+
+```bash
+cd /workspace/vm-sandbox
+limactl delete --force code-sandbox
+mise run test:vm
+```
+Expected: every assertion PASS from a clean guest.
+
+```bash
+cd /workspace/vm-sandbox
+git add internal/guest internal/cli README.md test-vm-sandbox.sh
+git commit -m "feat: allow switching the egress firewall mode at runtime
+
+init-firewall.sh already rebuilt squid.conf and every iptables rule from
+scratch, so a mode is just a parameter. The mode file lives in /run so a
+restart always reverts to allowlist, and there is no config key: a
+loosened firewall must not become the durable default. open mode keeps
+the UDP drop and the host-gateway reject, since neither costs anything."
+```
+
+---
+
 ## Self-Review
 
 **Spec coverage.** Every spec section maps to a task:
@@ -5079,8 +5500,10 @@ decisions rather than left to be discovered."
 | Testing (ported + VM-specific assertions) | 4, 5, 6, 7, 8, 9, 10 |
 | CI split | 1 (workflow), 10 (documented) |
 | Known limitations | 10 (README) |
+| Firewall modes | 11 |
 
-**Two deliberate deviations from the spec**, both discovered while planning:
+**Three deliberate deviations from the spec**, all discovered while planning
+and all reflected back into the spec document:
 
 1. **Layout.** `go:embed` cannot traverse upward, so the spec's top-level
    `guest/` and `lima/` directories live under `internal/guest/files/`. Same
@@ -5091,6 +5514,16 @@ decisions rather than left to be discovered."
    routed to Squid — breaking exactly the service-to-service traffic this design
    exists to fix. Squid stays reachable from containers; the env injection is
    now a config flag, default `false`.
+3. **Runtime firewall modes** (Task 11), added after the spec was approved. The
+   spec described a single fixed policy. Modes are runtime-only and tmpfs-backed
+   so a restart always reverts to `allowlist`, and there is no config key for
+   them.
+
+**One correction to an earlier task, applied inline.** Task 6's
+`init-firewall.sh` originally tmpfs-mounted `/run/sandbox`. `/run` is already a
+tmpfs on a systemd guest, so the mount bought nothing — and it would have
+shadowed the firewall mode file that Task 11 writes to that directory before
+reapplying the rules. Task 6 now only creates the directory, and says why.
 
 **Placeholder scan.** No `TBD`/`TODO` markers. Three places name a value to
 verify rather than fixing it, each with the command to resolve it: the mise tool
