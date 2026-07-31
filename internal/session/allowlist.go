@@ -26,10 +26,17 @@ type HostRunner func(ctx context.Context, name string, args ...string) ([]byte, 
 
 // Deps carries everything session setup needs. There is deliberately no
 // workspace field: nothing in session setup may read agent-authored files.
+//
+// AgentGID is used instead of the account name when setting group ownership in
+// the guest. The guest's group for that GID is not necessarily called
+// AgentUser: stock groups occupy low GIDs, so a host user with GID 100 lands in
+// the pre-existing "users" group and `chown root:devuser` would fail outright.
 type Deps struct {
 	Client    lima.Client
 	Config    config.Config
 	AgentUser string
+	AgentUID  int
+	AgentGID  int
 	Host      HostRunner
 }
 

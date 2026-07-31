@@ -11,6 +11,7 @@ import (
 	"github.com/wetransform/code-vm/internal/config"
 	"github.com/wetransform/code-vm/internal/guest"
 	"github.com/wetransform/code-vm/internal/lima"
+	"github.com/wetransform/code-vm/internal/session"
 )
 
 // newClient is a package variable so tests can substitute a fake runner.
@@ -19,6 +20,19 @@ var newClient = lima.NewClient
 // agentUser is the guest account the agent runs as. Its UID and GID mirror
 // the host user's so virtiofs-shared files are owned by it.
 const agentUser = "devuser"
+
+// agentDeps builds the session dependencies from one place, so the exec path
+// and `code-vm allow` cannot drift apart on what identity the guest work runs
+// under. The numeric ids mirror what provisioning gave the guest account.
+func agentDeps(cl lima.Client, c config.Config) session.Deps {
+	return session.Deps{
+		Client:    cl,
+		Config:    c,
+		AgentUser: agentUser,
+		AgentUID:  os.Getuid(),
+		AgentGID:  os.Getgid(),
+	}
+}
 
 // renderParams gathers the host-derived values the Lima template needs.
 func renderParams() (lima.RenderParams, error) {

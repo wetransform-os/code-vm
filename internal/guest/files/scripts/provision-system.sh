@@ -21,8 +21,30 @@ export DEBIAN_FRONTEND=noninteractive
 # ── Agent user ───────────────────────────────────────────────────────────────
 # UID/GID mirror the host user so virtiofs-shared workspace files are genuinely
 # owned by the agent, and stay host-owned when viewed from the host.
-if ! getent group "$AGENT_GID" > /dev/null; then
+# The agent's primary group must carry the host's GID so virtiofs ownership
+# lines up. Its *name* is whatever the guest already calls that GID: stock
+# groups occupy low GIDs (users=100 on many Linux distros, 20 for macOS hosts),
+# and a second group with a duplicate GID would leave `stat -c %G` reporting the
+# pre-existing name anyway. Nothing may assume this group is called
+# "$AGENT_USER" — every consumer chowns by numeric GID instead.
+if getent group "$AGENT_GID" > /dev/null; then
+    log "Group for gid $AGENT_GID already exists: $(getent group "$AGENT_GID" | cut -d: -f1)"
+else
     groupadd -g "$AGENT_GID" "$AGENT_USER"
+    log "Created group $AGENT_USER (gid=$AGENT_GID)"
+fi
+
+# A different account already on the host's UID would make the agent share an
+# identity with a guest user. Nothing in the stock image occupies it, so this is
+# a loud failure rather than a silent reuse.
+# `|| true` is required, not defensive noise: getent exits 2 when nothing matches,
+# and under `set -euo pipefail` that status propagates out of the pipeline and
+# aborts provisioning on the very first boot, when the agent does not exist yet.
+EXISTING_UID_USER=$(getent passwd "$AGENT_UID" | cut -d: -f1 || true)
+if [ -n "$EXISTING_UID_USER" ] && [ "$EXISTING_UID_USER" != "$AGENT_USER" ]; then
+    echo "[provision] ERROR: uid $AGENT_UID already belongs to '$EXISTING_UID_USER';" >&2
+    echo "[provision]        cannot create $AGENT_USER with the host user's UID." >&2
+    exit 1
 fi
 if ! id -u "$AGENT_USER" > /dev/null 2>&1; then
     useradd -m -u "$AGENT_UID" -g "$AGENT_GID" -s /bin/bash "$AGENT_USER"

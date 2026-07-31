@@ -10,8 +10,8 @@ correctness angle, then an independent adversarial verifier per candidate
 location. 35 agents; all ten findings below survived verification as
 `CONFIRMED`. Line references were re-checked against the working tree after the
 review completed.
-**Status:** findings 4, 5, 6, 7 and 8 are **fixed**; finding 2 is **closed by
-removal**. Findings 1, 3, 9 and 10 are open. Each section below carries its own
+**Status:** findings 3, 4, 5, 6, 7 and 8 are **fixed**; finding 2 is **closed by
+removal**. Findings 1, 9 and 10 are open. Each section below carries its own
 status line; `git log` has the commits.
 
 **Plus one issue the review did not surface.** `.sandbox-secrets.yaml` was read
@@ -38,8 +38,9 @@ Most findings are **regressions relative to the Docker sandbox**, not novel
 bugs: places where porting a control from `entrypoint.sh` into
 `sandbox-boot.service` silently dropped a property the container version had.
 Findings 1 and 4 were the clearest cases — an unfiltered-egress window and a
-firewall check that stopped being fatal. Finding 9 is a decision rather than a
-defect and is marked as such.
+firewall check that stopped being fatal. Finding 3 is the exception: a genuine
+port bug, where a group name was assumed to exist because it happened to on the
+development host. Finding 9 is a decision rather than a defect.
 
 ---
 
@@ -95,7 +96,28 @@ the file and its protection share one lifetime.
 ## 3. Host GID collision leaves no `devuser` group and bricks the VM
 
 **`internal/guest/files/scripts/provision-system.sh:24`** — severity: high
-(availability)
+(availability) — **FIXED**
+
+*Fix as applied:* the group-creation logic was right — `useradd -g <gid>` only
+needs *a* group with that GID to exist, whatever it is called. The defect was in
+every consumer that then assumed the group was named `devuser`. Those now set
+group ownership by numeric GID: `chown "root:${AGENT_GID}"` and
+`install -g "$AGENT_GID"` in `lock-settings.sh`, and `session.Deps` carries
+`AgentUID`/`AgentGID` so the Go side installs with numeric ids too. Creating a
+second group with a duplicate GID was rejected as the fix: `stat -c %G` would
+still report the pre-existing name, so the confusion would remain and the suite
+assertions would fail on a correct guest. Provisioning also now fails loudly if
+a *different* account already holds the host UID, instead of dying on a cryptic
+`useradd` error. The suite compares `%U:%g` numerically for the same reason.
+
+*Verified against the real failure,* by running both versions of
+`lock-settings.sh` in the guest against a user whose primary group is the
+pre-existing `users` (GID 100):
+
+```
+old: FAILED -> install: invalid group: 'collideuser'
+new: SUCCEEDED -> settings owned root:users (gid 100) 444
+```
 
 `getent group "$AGENT_GID"` tests for a group with that **GID**, not one named
 `devuser`. When the host user's primary GID already exists in the guest —
@@ -112,8 +134,9 @@ diagnostic.
 *Note:* this did not surface during implementation only because the development
 host's GID (1000) happens not to collide.
 
-*Fix direction:* check `getent group "$AGENT_USER"` for the name, and derive the
-group to use from the GID that is actually present rather than assuming the name.
+*Note:* the fix went further than the original direction suggested — rather than
+resolving the group's name and threading it through, no consumer refers to the
+group by name at all.
 
 ## 4. Firewall self-verification fails open instead of closed
 
@@ -282,13 +305,11 @@ loud warning.
 
 ## Remaining triage order
 
-Findings 4, 5, 6, 7 and 8 are fixed; 2 is closed by removal. What is left, in the
+Findings 3, 4, 5, 6, 7 and 8 are fixed; 2 is closed by removal. What is left, in the
 order I would take it:
 
-1. **3** — one-line-class fix that prevents an unusable VM for a large class of
-   hosts (any host user whose primary GID collides with a stock guest group).
-   Most likely of the remaining four to bite a real user.
-2. **1** — drop `-l` from `run_as_agent`; removes an unfiltered-egress channel.
-3. **10** — re-add the boot-time API reachability warning.
-4. **9** — decide whether CI should run the VM suite now that GitHub runners
+1. **1** — drop `-l` from `run_as_agent`; removes an unfiltered-egress channel.
+   The last open finding with a security consequence.
+2. **10** — re-add the boot-time API reachability warning.
+3. **9** — decide whether CI should run the VM suite now that GitHub runners
    expose KVM.

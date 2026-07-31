@@ -206,10 +206,14 @@ echo ""
 echo "── Settings lock ─────────────────────────────────────────────────"
 
 SETTINGS="/home/$AGENT_USER/.claude/settings.json"
-if [ "$(adm stat -c '%U:%G %a' "$SETTINGS")" = "root:$AGENT_USER 444" ]; then
+# Group compared numerically: the guest group carrying the host GID is not
+# necessarily named after the agent (a host GID of 100 lands in "users"), so
+# asserting on the name would fail on a perfectly correct guest.
+HOST_GID=$(id -g)
+if [ "$(adm stat -c '%U:%g %a' "$SETTINGS")" = "root:$HOST_GID 444" ]; then
     pass "settings.json is root-owned and read-only"
 else
-    fail "settings.json is root-owned and read-only (got $(adm stat -c '%U:%G %a' "$SETTINGS"))"
+    fail "settings.json is root-owned and read-only (got $(adm stat -c '%U:%g %a' "$SETTINGS"))"
 fi
 
 assert_fails "agent cannot write settings.json" \
@@ -575,7 +579,7 @@ assert_fails "a domain absent from the host config is blocked after restart" \
     agent curl -fsS -o /dev/null --max-time 20 https://example.org
 
 assert_ok "settings stay locked after restart" \
-    bash -c "[ \"\$(limactl shell $INSTANCE sudo stat -c '%U:%G %a' /home/$AGENT_USER/.claude/settings.json)\" = 'root:$AGENT_USER 444' ]"
+    bash -c "[ \"\$(limactl shell $INSTANCE sudo stat -c '%U:%g %a' /home/$AGENT_USER/.claude/settings.json)\" = 'root:$(id -g) 444' ]"
 
 # Host-config domains must survive a restart — that is the difference from the
 # tmpfs-only mechanism this replaced. init-firewall.sh writes the fragment at

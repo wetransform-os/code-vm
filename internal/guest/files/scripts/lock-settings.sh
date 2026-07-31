@@ -33,7 +33,7 @@ apply_tree() {
         dst="$CONFIG_DST/$rel"
         install -d "$(dirname "$dst")"
         cp "$src_file" "$dst"
-        chown "root:${AGENT_USER}" "$dst"
+        chown "root:${AGENT_GID}" "$dst"
         chmod 0444 "$dst"
         echo "[lock-settings]   Locked: $rel"
     done < <(find "$src" -type f)
@@ -47,7 +47,7 @@ if [ -f "$SETTINGS" ]; then
     PREV_ENABLED_PLUGINS="$(jq -c '.enabledPlugins // {}' "$SETTINGS" 2> /dev/null || echo '{}')"
 fi
 
-install -d -o "$AGENT_USER" -g "$AGENT_USER" "$CLAUDE_DIR"
+install -d -o "$AGENT_UID" -g "$AGENT_GID" "$CLAUDE_DIR"
 apply_tree "$CONFIG_SRC"
 
 merge_into_settings() {
@@ -57,7 +57,7 @@ merge_into_settings() {
     chmod 0644 "$SETTINGS"
     jq "$@" "$prog" "$SETTINGS" > "${SETTINGS}.tmp"
     mv "${SETTINGS}.tmp" "$SETTINGS"
-    chown "root:${AGENT_USER}" "$SETTINGS"
+    chown "root:${AGENT_GID}" "$SETTINGS"
     chmod 0444 "$SETTINGS"
 }
 
@@ -71,7 +71,7 @@ fi
 # Claim settings.local.json: Claude Code treats it as an override file, so an
 # unclaimed path is a permission-bypass vector.
 echo '{}' > "$SETTINGS_LOCAL"
-chown "root:${AGENT_USER}" "$SETTINGS_LOCAL"
+chown "root:${AGENT_GID}" "$SETTINGS_LOCAL"
 chmod 0444 "$SETTINGS_LOCAL"
 
 echo "[lock-settings] Config restored from canonical and locked"

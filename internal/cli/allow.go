@@ -244,9 +244,7 @@ func newAllowCmd() *cobra.Command {
 				fmt.Fprintln(out, "VM is not running; the new domains apply on next start.")
 				return nil
 			}
-			if err := session.ApplyAllowlist(ctx, session.Deps{
-				Client: cl, Config: c, AgentUser: agentUser,
-			}); err != nil {
+			if err := session.ApplyAllowlist(ctx, agentDeps(cl, c)); err != nil {
 				return fmt.Errorf("apply allowlist: %w", err)
 			}
 			mode, err := currentFirewallMode(ctx, cl)
