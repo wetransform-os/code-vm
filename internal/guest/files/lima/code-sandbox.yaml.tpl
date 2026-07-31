@@ -43,8 +43,13 @@ mountType: virtiofs
 
 # No automatic port forwarding: nothing in the guest needs to be reachable
 # from the host, and the Docker socket is deliberately not exposed.
+# guestIP 0.0.0.0 (with guestIPMustBeZero left false) matches every bind
+# address and proto:any covers UDP — a bare guestPortRange ignore was observed
+# to still forward wildcard-bound TCP ports like Squid's 3128.
 portForwards:
-- guestPortRange: [1, 65535]
+- guestIP: "0.0.0.0"
+  guestPortRange: [1, 65535]
+  proto: any
   ignore: true
 
 hostResolver:
