@@ -238,31 +238,81 @@ iptables -A OUTPUT -m limit --limit 5/min -j LOG --log-prefix "[FIREWALL-BLOCKED
 iptables -A OUTPUT -j REJECT --reject-with icmp-port-unreachable
 
 # ── Self-verify ─────────────────────────────────────────────────────────────
-# The Lima readiness probe waits for this file, so `limactl start` cannot
-# return before the firewall is up.
+# Checks match whole rule specs from `iptables -S`, not substrings of the
+# human-readable listing. The loose form was actively misleading: the
+# agent-to-Squid ACCEPT rule added above also contains
+# "owner UID match <agent uid>", so grepping for that reported the gateway
+# REJECT as present even when it was gone.
+RULES=$(iptables -S OUTPUT)
+PROXY_UID=$(id -u proxy 2> /dev/null || echo 13)
+
 VERIFY_OK=true
-OUTPUT_POLICY=$(iptables -L OUTPUT -n | head -1 | grep -o "DROP" || echo "NOT_DROP")
-[ "$OUTPUT_POLICY" = "DROP" ] || VERIFY_OK=false
+
+# has_rule matches a complete rule line, so no other rule can satisfy a check.
+# Each check is spelled out rather than routed through a helper that returns its
+# result: a helper called in a command substitution runs in a subshell, where
+# setting VERIFY_OK=false would be silently discarded and the verification would
+# always pass.
+has_rule() { printf '%s\n' "$RULES" | grep -qxF -- "$1"; }
+
+OUTPUT_POLICY=NOT_DROP
+if has_rule "-P OUTPUT DROP"; then
+    OUTPUT_POLICY=DROP
+else
+    echo "[firewall] ERROR: the OUTPUT policy is not DROP" >&2
+    VERIFY_OK=false
+fi
 
 udp_drop=no
-iptables -L OUTPUT -n | grep -qE "DROP[[:space:]]+17|DROP.*udp" && udp_drop=yes
-[ "$udp_drop" = yes ] || VERIFY_OK=false
+if has_rule "-A OUTPUT -p udp -j DROP"; then
+    udp_drop=yes
+else
+    echo "[firewall] ERROR: the DNS-tunneling UDP drop is missing" >&2
+    VERIFY_OK=false
+fi
 
-PROXY_UID=$(id -u proxy 2> /dev/null || echo 13)
 proxy_rule=no
-iptables -L OUTPUT -n -v | grep -q "owner UID match $PROXY_UID" && proxy_rule=yes
-[ "$proxy_rule" = yes ] || VERIFY_OK=false
+if has_rule "-A OUTPUT -m owner --uid-owner $PROXY_UID -j ACCEPT"; then
+    proxy_rule=yes
+else
+    echo "[firewall] ERROR: Squid's own egress rule (uid $PROXY_UID) is missing" >&2
+    VERIFY_OK=false
+fi
 
-gw_reject=no
+gw_reject=skipped
 if [ -n "$GATEWAY" ]; then
-    iptables -L OUTPUT -n -v | grep -q "owner UID match $AGENT_UID" && gw_reject=yes
-    [ "$gw_reject" = yes ] || VERIFY_OK=false
+    gw_reject=no
+    if has_rule "-A OUTPUT -d ${GATEWAY}/32 -m owner --uid-owner ${AGENT_UID} -j REJECT --reject-with icmp-port-unreachable"; then
+        gw_reject=yes
+    else
+        echo "[firewall] ERROR: the agent-to-host-gateway reject ($GATEWAY) is missing" >&2
+        VERIFY_OK=false
+    fi
 fi
 
 squid_running=no
-(echo > /dev/tcp/localhost/3128) 2> /dev/null && squid_running=yes
+if (echo > /dev/tcp/localhost/3128) 2> /dev/null; then
+    squid_running=yes
+else
+    echo "[firewall] ERROR: Squid is not listening on 3128" >&2
+    VERIFY_OK=false
+fi
 
+if [ "$VERIFY_OK" != true ]; then
+    # Deliberately leave $VERIFY_FILE absent. The Lima readiness probe treats
+    # its existence as "the firewall is up", so writing it before this gate —
+    # as an earlier version did — let `limactl start` succeed and hand the
+    # agent a VM whose firewall had failed its own checks. In the container
+    # sandbox this same exit aborted entrypoint.sh and the container died; the
+    # equivalent here is to withhold the readiness signal.
+    echo "[firewall] ERROR: verification failed; refusing to report the firewall as ready." >&2
+    exit 1
+fi
+
+# Written only once every check above has passed, so its presence is a real
+# success signal rather than a record of whatever was found.
 {
+    echo "VERIFY=ok"
     echo "OUTPUT_POLICY=$OUTPUT_POLICY"
     echo "UDP_DROP=$udp_drop"
     echo "PROXY_UID_RULE=$proxy_rule"
@@ -273,8 +323,4 @@ squid_running=no
 } > "$VERIFY_FILE"
 chmod 0444 "$VERIFY_FILE"
 
-if [ "$VERIFY_OK" != true ]; then
-    echo "[firewall] ERROR: verification failed; rules are incorrect."
-    exit 1
-fi
 echo "[firewall] Active. DEFAULT DENY + Squid allowlist on :3128 (mode=$MODE)"

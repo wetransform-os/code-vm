@@ -148,7 +148,7 @@ echo ""
 echo "── Firewall ──────────────────────────────────────────────────────"
 
 VERIFY=$(adm cat /run/firewall-verify)
-for kv in "OUTPUT_POLICY=DROP" "UDP_DROP=yes" "PROXY_UID_RULE=yes" \
+for kv in "VERIFY=ok" "OUTPUT_POLICY=DROP" "UDP_DROP=yes" "PROXY_UID_RULE=yes" \
     "AGENT_GATEWAY_REJECT=yes" "SQUID_RUNNING=yes"; do
     if echo "$VERIFY" | grep -qx "$kv"; then
         pass "firewall self-verify: $kv"
@@ -156,6 +156,33 @@ for kv in "OUTPUT_POLICY=DROP" "UDP_DROP=yes" "PROXY_UID_RULE=yes" \
         fail "firewall self-verify: $kv (got: $(echo "$VERIFY" | tr '\n' ' '))"
     fi
 done
+
+# The assertions above trust the guest's own report. These check the rules
+# directly, because a self-check can be wrong in the direction that matters:
+# the gateway-reject check used to match any rule mentioning the agent UID, so
+# the agent-to-Squid ACCEPT rule satisfied it and the report said "yes" whether
+# or not the reject existed.
+RULES=$(adm iptables -S OUTPUT)
+# shellcheck disable=SC2016 # awk program, expanded inside the guest
+GUEST_GW=$(adm sh -c 'ip route show default | awk "{print \$3; exit}"')
+GUEST_AGENT_UID=$(adm id -u "$AGENT_USER")
+GUEST_PROXY_UID=$(adm id -u proxy)
+
+for spec in \
+    "-P OUTPUT DROP" \
+    "-A OUTPUT -p udp -j DROP" \
+    "-A OUTPUT -m owner --uid-owner $GUEST_PROXY_UID -j ACCEPT" \
+    "-A OUTPUT -d ${GUEST_GW}/32 -m owner --uid-owner ${GUEST_AGENT_UID} -j REJECT --reject-with icmp-port-unreachable"; do
+    if echo "$RULES" | grep -qxF -- "$spec"; then
+        pass "iptables rule present: $spec"
+    else
+        fail "iptables rule present: $spec"
+    fi
+done
+
+# A failed boot must leave no readiness signal and no stale failure marker.
+assert_fails "no boot-failure marker on a healthy VM" \
+    adm test -e /run/sandbox-boot-failed
 
 # No -f here: the API root returns 404, and for HTTPS a Squid denial breaks
 # the CONNECT tunnel itself, so any completed HTTP exchange proves reachability.

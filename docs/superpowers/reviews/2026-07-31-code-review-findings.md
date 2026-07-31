@@ -10,8 +10,9 @@ correctness angle, then an independent adversarial verifier per candidate
 location. 35 agents; all ten findings below survived verification as
 `CONFIRMED`. Line references were re-checked against the working tree after the
 review completed.
-**Status:** findings 6, 7 and 8 are **fixed** in `7b5209b`; finding 2 is **closed
-by removal**. The rest are open. Each section below carries its own status line.
+**Status:** findings 4, 5, 6, 7 and 8 are **fixed**; finding 2 is **closed by
+removal**. Findings 1, 3, 9 and 10 are open. Each section below carries its own
+status line; `git log` has the commits.
 
 **Plus one issue the review did not surface.** `.sandbox-secrets.yaml` was read
 from the agent-writable workspace and its `source:` values executed **on the
@@ -36,8 +37,9 @@ must do differently.
 Most findings are **regressions relative to the Docker sandbox**, not novel
 bugs: places where porting a control from `entrypoint.sh` into
 `sandbox-boot.service` silently dropped a property the container version had.
-The two most serious still-open ones (1 and 4) are both of that shape. Finding 9
-is a decision rather than a defect and is marked as such.
+Findings 1 and 4 were the clearest cases — an unfiltered-egress window and a
+firewall check that stopped being fatal. Finding 9 is a decision rather than a
+defect and is marked as such.
 
 ---
 
@@ -116,7 +118,20 @@ group to use from the GID that is actually present rather than assuming the name
 ## 4. Firewall self-verification fails open instead of closed
 
 **`internal/guest/files/scripts/init-firewall.sh:251`** (verify file written) vs
-**`:254`** (`VERIFY_OK` gate) — severity: high
+**`:254`** (`VERIFY_OK` gate) — severity: high — **FIXED**
+
+*Fix as applied:* the verify file is written only after every check passes, so its
+existence is a real success signal and a failed verification withholds the
+readiness signal entirely — the equivalent of the container dying. It also gained
+a `VERIFY=ok` first line. Because the probe would otherwise only notice by timing
+out after 300 s, `sandbox-boot.sh` now traps `ERR` and touches
+`/run/sandbox-boot-failed`, which the probe watches so a broken boot fails
+immediately and names the step.
+
+*Verified empirically,* not just by reading: patching one `has_rule` check in a
+copy of the live script to expect a nonexistent rule produced `exit=1`, the
+message `the DNS-tunneling UDP drop is missing`, and no verify file. The probe
+loop with the marker present exited non-zero in 0 s rather than 300 s.
 
 The script writes `/run/firewall-verify` **before** it evaluates `VERIFY_OK` and
 exits 1. The Lima readiness probe only checks that the file *exists*. In the
@@ -130,13 +145,23 @@ success, and `code-vm` runs Claude in a VM whose firewall failed its own
 verification. Nothing host-side reads the file's *contents*; only the
 informational `status` and `firewall` commands do.
 
-*Fix direction:* write the verify file only after `VERIFY_OK` passes (and have
-the probe or `ensureRunning` treat a failed `sandbox-boot.service` as fatal).
-This restores the fail-closed property without weakening any check.
+*Note:* the fix was to withhold the readiness signal, never to relax a check.
 
 ## 5. The gateway-REJECT check is satisfied by the Squid ACCEPT rule
 
-**`internal/guest/files/scripts/init-firewall.sh:236`** — severity: medium
+**`internal/guest/files/scripts/init-firewall.sh:236`** — severity: medium — **FIXED**
+
+*Fix as applied:* every check now matches a whole rule line from `iptables -S`
+via `grep -qxF`, so no other rule can satisfy it. The proxy-egress check had the
+identical weakness and was fixed with it. The suite additionally asserts the four
+rule specs directly against `iptables -S`, independent of the guest's
+self-report — the previous assertions only confirmed that the guest said "yes".
+
+One thing worth recording: the first version of this fix routed each check
+through a helper called in a command substitution, where `VERIFY_OK=false` would
+have been set in a subshell and discarded — the verification would have passed
+unconditionally, reintroducing finding 4 while appearing to fix finding 5. The
+checks are spelled out individually for that reason.
 
 `gw_reject` greps for any line containing `owner UID match $AGENT_UID`. The
 agent-to-Squid ACCEPT rule appended earlier (`:192`) matches that string too, so
@@ -257,14 +282,13 @@ loud warning.
 
 ## Remaining triage order
 
-Findings 6, 7 and 8 are fixed; 2 is closed by removal. What is left, in the order
-I would take it:
+Findings 4, 5, 6, 7 and 8 are fixed; 2 is closed by removal. What is left, in the
+order I would take it:
 
-1. **4** and **5** — self-verify defects; small, self-contained, and they restore
-   guarantees the suite currently only appears to check.
-2. **3** — one-line-class fix that prevents an unusable VM for a large class of
+1. **3** — one-line-class fix that prevents an unusable VM for a large class of
    hosts (any host user whose primary GID collides with a stock guest group).
-3. **1** — drop `-l` from `run_as_agent`; removes an unfiltered-egress channel.
-4. **10** — re-add the boot-time API reachability warning.
-5. **9** — decide whether CI should run the VM suite now that GitHub runners
+   Most likely of the remaining four to bite a real user.
+2. **1** — drop `-l` from `run_as_agent`; removes an unfiltered-egress channel.
+3. **10** — re-add the boot-time API reachability warning.
+4. **9** — decide whether CI should run the VM suite now that GitHub runners
    expose KVM.
