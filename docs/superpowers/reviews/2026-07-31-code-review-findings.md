@@ -10,16 +10,27 @@ correctness angle, then an independent adversarial verifier per candidate
 location. 35 agents; all ten findings below survived verification as
 `CONFIRMED`. Line references were re-checked against the working tree after the
 review completed.
-**Status:** nothing has been fixed. This file records the findings so the work
-can be triaged and picked up deliberately.
+**Status:** findings 6, 7 and 8 are **fixed** in `7b5209b`; the rest are open.
+Each section below carries its own status line.
+
+Also noticed while implementing that fix, and **not** covered by the review:
+`.sandbox-secrets.yaml` is read from the agent-writable workspace and its
+`source:` values are executed **on the host** via `bash -c`
+(`internal/session/credentials.go`, `ResolveSecrets` → `ExecHost`). An agent that
+writes that file gets host command execution on the next `code-vm` invocation in
+that directory — the same class as finding 7 but more severe. It is inherited
+from the container sandbox, where `bin/code-sandbox` resolves secrets the same
+way, so it is a pre-existing design property rather than a porting regression.
+Needs its own decision: host-side confirmation on change, a checksum the
+developer approves once, or accepting it and saying so.
 
 ## The pattern
 
 Most findings are **regressions relative to the Docker sandbox**, not novel
 bugs: places where porting a control from `entrypoint.sh` into
 `sandbox-boot.service` silently dropped a property the container version had.
-The two most serious (1 and 4) are both of that shape. Two findings (7 and 9)
-are arguably design questions rather than defects and are marked as such.
+The two most serious still-open ones (1 and 4) are both of that shape. Finding 9
+is a decision rather than a defect and is marked as such.
 
 ---
 
@@ -128,7 +139,15 @@ gateway address in the grep, not just the UID-owner match.
 ## 6. Predictable `/tmp` staging paths allow ACL injection
 
 **`internal/session/allowlist.go:111`**, same pattern at
-**`internal/session/gitidentity.go:63`** — severity: medium
+**`internal/session/gitidentity.go:63`** — severity: medium — **FIXED in `7b5209b`**
+
+*Fix as applied:* all three call sites (allowlist, git identity, credentials) now
+go through `session.installContent`, which stages under
+`/home/limaadmin/.code-vm-staging` — created `0700` and owned by the admin user,
+so the agent cannot enter it — with a `crypto/rand` filename. It cannot be a
+root-only directory because `limactl copy` authenticates as the Lima guest user.
+`stage_test.go` pins the staging location, the mode, and the post-install
+cleanup; the suite asserts the agent cannot read the staging directory.
 
 Files are staged into the guest at deterministic, agent-writable paths:
 `/tmp/10-<sha256-prefix>.conf` and `/tmp/code-vm-gitconfig`. Root then
@@ -145,7 +164,7 @@ created `0700 root:root`), or use an unpredictable per-invocation filename.
 
 ## 7. `.sandbox-domains` is agent-authored input that widens the allowlist
 
-**`internal/session/allowlist.go:81`** — severity: medium; **arguably by design**
+**`internal/session/allowlist.go:81`** — severity: medium — **FIXED in `7b5209b`**
 
 `ApplyAllowlist` reads `.sandbox-domains` from the workspace, which is mounted
 writable and is exactly what the agent edits. An agent can therefore author its
@@ -156,18 +175,26 @@ own allowlist entry and have the next `code-vm` invocation install it as root.
 after which repository contents and rendered credential values can be POSTed
 out, with only a proxy-log line as evidence.
 
-*Design note:* the container sandbox has the same property, and per-project
-domain files are a deliberate feature. Worth deciding explicitly: leave it
-documented as an accepted limitation, or require host-side confirmation when the
-file changes (a diff prompt on first use of a new domain).
+*Fix as applied:* `.sandbox-domains` support was **removed** rather than
+mitigated. The host config's `extraDomains` is now the only source; it lives
+outside every mount, `MountsExclude` refuses to run when a mount would expose
+it, and entries are validated against a domain pattern before they can reach
+`squid.conf`. `code-vm allow` replaces the per-project file as the way to add a
+domain, applying it live via the fragment. The cost accepted: a project can no
+longer record its required domains in its own repo for teammates.
 
 ## 8. Every firewall mode switch wipes the Squid audit log
 
-**`internal/guest/files/scripts/init-firewall.sh:129`** — severity: medium
+**`internal/guest/files/scripts/init-firewall.sh:129`** — severity: medium — **FIXED in `7b5209b`**
 
 `install -m 0644 -o proxy -g proxy /dev/null /var/log/squid/access.log`
 truncates the log on every run, and `set-firewall-mode.sh` re-execs
 `init-firewall.sh` — so switching modes destroys the audit trail.
+
+*Fix as applied:* the log is created only when absent. This became a
+prerequisite rather than a nicety once `code-vm allow` started reading denied
+entries out of that log. The suite compares line counts across an
+`audit` → `allowlist` round trip.
 
 *Failure scenario:* a user sees suspicious denied requests and runs
 `code-vm firewall audit` to investigate. The switch truncates `access.log`, and
@@ -214,13 +241,19 @@ loud warning.
 
 ---
 
-## Suggested triage order
+## Remaining triage order
+
+Findings 6, 7 and 8 are done. What is left, in the order I would take it:
 
 1. **4** and **5** — self-verify defects; small, self-contained, and they restore
    guarantees the suite currently only appears to check.
 2. **3** — one-line-class fix that prevents an unusable VM for a large class of
-   hosts.
-3. **1** — drop `-l`; removes an unfiltered-egress channel.
-4. **2** and **6** — lifetime and staging fixes; more design thought needed.
-5. **8**, **10** — small robustness/observability fixes.
-6. **7**, **9** — decisions to make rather than defects to fix.
+   hosts (any host user whose primary GID collides with a stock guest group).
+3. **1** — drop `-l` from `run_as_agent`; removes an unfiltered-egress channel.
+4. **2** — credential deny-rule lifetime; needs a decision on whether to persist
+   the rules or remove the rendered files.
+5. **10** — re-add the boot-time API reachability warning.
+6. **9** — decide whether CI should run the VM suite now that GitHub runners
+   expose KVM.
+7. The `.sandbox-secrets.yaml` host-execution issue noted at the top of this
+   file, which the review did not surface.
