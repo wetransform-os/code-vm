@@ -1,6 +1,17 @@
 [Unit]
 Description=code-vm sandbox boot sequence
+# cloud-final.service is where Lima's provisioning runs. Provisioning needs
+# unrestricted egress, so the boot sequence (which closes the firewall) must
+# not start before it finishes.
+After=cloud-final.service network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/true
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/sandbox/sandbox-boot.sh
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

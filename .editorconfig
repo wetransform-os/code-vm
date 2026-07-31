@@ -1,0 +1,7 @@
+# shfmt reads these settings for the guest shell scripts.
+root = true
+
+[{*.sh,sandbox-exec}]
+indent_style = space
+indent_size = 4
+space_redirects = true

@@ -24,6 +24,7 @@ func NewRootCmd() *cobra.Command {
 	}
 	root.PersistentFlags().StringVar(&configPath, "config", "", "path to config.yaml (default ~/.config/code-vm/config.yaml)")
 	root.AddCommand(newDoctorCmd())
+	root.AddCommand(newStartCmd())
 	return root
 }
 

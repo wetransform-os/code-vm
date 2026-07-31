@@ -49,7 +49,7 @@ func atLeastLimaVersion(got string) error {
 			return nil
 		}
 		if v[i] < minLima[i] {
-			return fmt.Errorf("Lima %s is too old; need %d.%d.%d or newer",
+			return fmt.Errorf("installed version %s is too old; need %d.%d.%d or newer",
 				got, minLima[0], minLima[1], minLima[2])
 		}
 	}
