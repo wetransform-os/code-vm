@@ -221,6 +221,46 @@ fi
 rm -rf "$COMPOSE_DIR"
 
 echo ""
+echo "── Session setup ─────────────────────────────────────────────────"
+# The widened domain persists for the VM's lifetime, so this section must run
+# AFTER the egress assertions above; the restart-hygiene section at the end
+# verifies the fragment (and the widening) disappears on reboot.
+
+DOMAIN_TEST_DIR="$PROJECTS_ROOT/.code-vm-domains-test"
+mkdir -p "$DOMAIN_TEST_DIR"
+echo ".example.org" > "$DOMAIN_TEST_DIR/.sandbox-domains"
+
+if (cd "$DOMAIN_TEST_DIR" && "$CODE_VM" -- curl -fsS -o /dev/null --max-time 20 https://example.org); then
+    pass "per-workspace .sandbox-domains widens the allowlist"
+else
+    fail "per-workspace .sandbox-domains widens the allowlist"
+fi
+
+FRAGMENTS=$(adm sh -c 'ls /run/sandbox/squid-allow.d')
+if echo "$FRAGMENTS" | grep -q '^10-.*\.conf$'; then
+    pass "workspace fragment is installed"
+else
+    fail "workspace fragment is installed (got: $(echo "$FRAGMENTS" | tr '\n' ' '))"
+fi
+
+if [ "$(adm stat -c '%U:%G %a' "/run/sandbox/squid-allow.d/$(echo "$FRAGMENTS" | grep '^10-' | head -1)")" = "root:root 444" ]; then
+    pass "fragment is root-owned and read-only"
+else
+    fail "fragment is root-owned and read-only"
+fi
+
+HOST_GIT_EMAIL=$(git config --get user.email || true)
+if [ -n "$HOST_GIT_EMAIL" ]; then
+    if agent git config --get user.email | grep -qx "$HOST_GIT_EMAIL"; then
+        pass "host git identity is seeded into the guest"
+    else
+        fail "host git identity is seeded into the guest"
+    fi
+fi
+
+rm -rf "$DOMAIN_TEST_DIR"
+
+echo ""
 echo "── Resource limits ───────────────────────────────────────────────"
 
 if adm systemctl show "user-$(id -u).slice" -p TasksMax | grep -q "TasksMax=2048"; then

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/wetransform/code-vm/internal/config"
+	"github.com/wetransform/code-vm/internal/session"
 )
 
 // agentCommand returns the command to run in the guest, defaulting to an
@@ -49,6 +50,14 @@ func runDefault(ctx context.Context, args []string) error {
 	cl := newClient()
 	if err := ensureRunning(ctx, cl, c); err != nil {
 		return err
+	}
+	if err := session.Setup(ctx, session.Deps{
+		Client:    cl,
+		Config:    c,
+		Workspace: workdir,
+		AgentUser: agentUser,
+	}); err != nil {
+		return fmt.Errorf("session setup: %w", err)
 	}
 	return cl.Agent(ctx, workdir, agentCommand(args))
 }
