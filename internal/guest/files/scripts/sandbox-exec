@@ -1,0 +1,5 @@
+#!/bin/bash
+set -a
+[ -f /etc/environment ] && . /etc/environment
+set +a
+exec "$@"

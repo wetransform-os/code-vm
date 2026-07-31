@@ -1,0 +1,6 @@
+[Unit]
+Description=code-vm sandbox boot sequence
+
+[Service]
+Type=oneshot
+ExecStart=/bin/true

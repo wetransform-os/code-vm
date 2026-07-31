@@ -1,0 +1,93 @@
+# Rendered by code-vm from ~/.config/code-vm/config.yaml. Do not edit by hand:
+# `code-vm` regenerates this file on every start.
+minimumLimaVersion: 2.2.0
+
+# Only the image is inherited. The upstream default mounts section is
+# deliberately NOT inherited: it mounts the host $HOME read-only, which would
+# expose ~/.ssh and ~/.aws.
+base:
+- template:_images/ubuntu-lts
+
+cpus: 4
+memory: "12GiB"
+disk: "100GiB"
+
+# containerd is not used; Docker is installed by provisioning instead.
+containerd:
+  system: false
+  user: false
+
+# Lima's own guest user. Privileged, used only by code-vm for session setup.
+# The agent runs as devuser (UID 1000), created by provisioning
+# with no sudo. UID 60000 avoids colliding with the host UID.
+user:
+  name: limaadmin
+  uid: 60000
+  comment: "code-vm admin"
+  passwordlessSudo: true
+
+ssh:
+  # Do not copy host SSH public keys into the guest.
+  loadDotSSHPubKeys: false
+
+mounts:
+- location: "/home/st/projects"
+  mountPoint: "/home/st/projects"
+  writable: true
+- location: "/home/st/work/other"
+  mountPoint: "/home/st/work/other"
+  writable: true
+# virtiofs preserves host UIDs, which is what makes the agent's UID match the
+# host user's and keeps workspace files host-owned. An SSH-based reverse mount
+# would map ownership to the SSH user and break that.
+mountType: virtiofs
+
+# No automatic port forwarding: nothing in the guest needs to be reachable
+# from the host, and the Docker socket is deliberately not exposed.
+portForwards:
+- guestPortRange: [1, 65535]
+  ignore: true
+
+hostResolver:
+  hosts: {}
+
+provision:
+- mode: data
+  path: "/etc/sandbox/provision.env"
+  owner: "root:root"
+  permissions: "0444"
+  overwrite: true
+  content: |
+    # Written by code-vm. Sourced by the guest provisioning scripts.
+    AGENT_USER=devuser
+    AGENT_UID=1000
+    AGENT_GID=1000
+    EXTRA_ALLOWED_DOMAINS="registry.example.com"
+    CONTAINER_PROXY=false
+- mode: data
+  path: "/usr/local/lib/sandbox/example.sh"
+  owner: "root:root"
+  permissions: "0755"
+  overwrite: true
+  content: |
+    #!/bin/bash
+    echo hi
+- mode: system
+  script: |
+    #!/bin/bash
+    set -euo pipefail
+    exec /usr/local/lib/sandbox/provision-system.sh
+
+probes:
+# init-firewall.sh writes /run/firewall-verify last. Waiting on it makes
+# `limactl start` return only once the egress firewall is actually up, so a
+# code-vm session can never land in an unfiltered VM.
+- mode: readiness
+  description: sandbox boot sequence to finish
+  script: |
+    #!/bin/bash
+    set -eu
+    timeout 300s bash -c 'until [ -f /run/firewall-verify ]; do sleep 2; done'
+  hint: |
+    The sandbox boot sequence did not finish. Inspect it with:
+      limactl shell code-sandbox sudo journalctl -u sandbox-boot.service
