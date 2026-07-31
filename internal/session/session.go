@@ -9,5 +9,8 @@ func Setup(ctx context.Context, d Deps) error {
 	if err := ApplyAllowlist(ctx, d); err != nil {
 		return err
 	}
-	return ApplyGitIdentity(ctx, d)
+	if err := ApplyGitIdentity(ctx, d); err != nil {
+		return err
+	}
+	return ApplyCredentials(ctx, d)
 }

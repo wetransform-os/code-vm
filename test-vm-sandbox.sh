@@ -54,6 +54,10 @@ if mise run build; then pass "code-vm builds"; else fail "code-vm builds"; exit 
 echo "[test] Starting the sandbox VM (first boot provisions; this takes minutes)..."
 if "$CODE_VM" start; then pass "VM starts"; else fail "VM starts"; exit 1; fi
 
+# Pre-clean state a previous warm-VM suite run may have left behind, so the
+# egress assertions below see boot-fresh conditions. A clean guest is a no-op.
+adm sh -c 'rm -f /run/sandbox/squid-allow.d/10-*.conf && squid -k reconfigure' > /dev/null 2>&1 || true
+
 echo ""
 echo "── Agent user isolation ──────────────────────────────────────────"
 
@@ -259,6 +263,55 @@ if [ -n "$HOST_GIT_EMAIL" ]; then
 fi
 
 rm -rf "$DOMAIN_TEST_DIR"
+
+echo ""
+echo "── Credential injection ──────────────────────────────────────────"
+
+CRED_DIR="$PROJECTS_ROOT/.code-vm-cred-test"
+mkdir -p "$CRED_DIR"
+CRED_DEST="/home/$AGENT_USER/.code-vm-test.properties"
+cat > "$CRED_DIR/.sandbox-secrets.yaml" << YAML
+secrets:
+  TEST_USER:
+    source: printf sandbox-user
+targets:
+  - template: gradle-properties
+    dest: $CRED_DEST
+    secrets:
+      - name: TEST_USER
+        as: testUser
+YAML
+
+(cd "$CRED_DIR" && "$CODE_VM" -- true > /dev/null 2>&1)
+
+if [ "$(adm stat -c '%U:%G %a' "$CRED_DEST" 2> /dev/null)" = "root:$AGENT_USER 444" ]; then
+    pass "rendered credential is root-owned and read-only"
+else
+    fail "rendered credential is root-owned and read-only (got $(adm stat -c '%U:%G %a' "$CRED_DEST" 2> /dev/null))"
+fi
+
+if adm grep -q 'testUser=sandbox-user' "$CRED_DEST"; then
+    pass "credential rendered through the gradle-properties template"
+else
+    fail "credential rendered through the gradle-properties template"
+fi
+
+assert_fails "agent cannot overwrite the rendered credential" \
+    agent bash -c "echo x > $CRED_DEST"
+
+# shellcheck disable=SC2016 # jq program, not a shell expansion
+if adm jq -e --arg d "$CRED_DEST" '.permissions.deny | index("Read(" + $d + ")")' \
+    "/home/$AGENT_USER/.claude/settings.json" > /dev/null; then
+    pass "credential deny rule merged into settings.json"
+else
+    fail "credential deny rule merged into settings.json"
+fi
+
+assert_fails "secret payload is wiped from the guest" \
+    adm test -f /run/sandbox-secrets/payload.json
+
+adm rm -f "$CRED_DEST"
+rm -rf "$CRED_DIR"
 
 echo ""
 echo "── Resource limits ───────────────────────────────────────────────"
