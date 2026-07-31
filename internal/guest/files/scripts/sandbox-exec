@@ -50,7 +50,7 @@ if [ -n "$workdir" ]; then
         USER="$AGENT_USER" \
         LOGNAME="$AGENT_USER" \
         XDG_RUNTIME_DIR="/run/user/${AGENT_UID}" \
-        PATH="/home/${AGENT_USER}/.local/bin:/home/${AGENT_USER}/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+        PATH="/home/${AGENT_USER}/.local/bin:/home/${AGENT_USER}/.opencode/bin:/home/${AGENT_USER}/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
         bash -c 'cd "$1" || exit 1; shift; exec "$@"' _ "$workdir" "${cmd[@]}"
 fi
 
@@ -60,5 +60,5 @@ exec setpriv --reuid "$AGENT_UID" --regid "$AGENT_GID" --init-groups \
     USER="$AGENT_USER" \
     LOGNAME="$AGENT_USER" \
     XDG_RUNTIME_DIR="/run/user/${AGENT_UID}" \
-    PATH="/home/${AGENT_USER}/.local/bin:/home/${AGENT_USER}/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+    PATH="/home/${AGENT_USER}/.local/bin:/home/${AGENT_USER}/.opencode/bin:/home/${AGENT_USER}/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
     "${cmd[@]}"

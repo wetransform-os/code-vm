@@ -10,9 +10,10 @@ correctness angle, then an independent adversarial verifier per candidate
 location. 35 agents; all ten findings below survived verification as
 `CONFIRMED`. Line references were re-checked against the working tree after the
 review completed.
-**Status:** findings 3, 4, 5, 6, 7 and 8 are **fixed**; finding 2 is **closed by
-removal**. Findings 1, 9 and 10 are open. Each section below carries its own
-status line; `git log` has the commits.
+**Status:** findings 1, 3, 4, 5, 6, 7 and 8 are **fixed**; finding 2 is **closed
+by removal**. Findings 9 and 10 are open, and neither has a security
+consequence. Each section below carries its own status line; `git log` has the
+commits.
 
 **Plus one issue the review did not surface.** `.sandbox-secrets.yaml` was read
 from the agent-writable workspace and its `source:` values executed **on the
@@ -38,7 +39,8 @@ Most findings are **regressions relative to the Docker sandbox**, not novel
 bugs: places where porting a control from `entrypoint.sh` into
 `sandbox-boot.service` silently dropped a property the container version had.
 Findings 1 and 4 were the clearest cases — an unfiltered-egress window and a
-firewall check that stopped being fatal. Finding 3 is the exception: a genuine
+firewall check that stopped being fatal. Both turned out to be worse than the
+review described once examined. Finding 3 is the exception: a genuine
 port bug, where a group name was assumed to exist because it happened to on the
 development host. Finding 9 is a decision rather than a defect.
 
@@ -46,7 +48,40 @@ development host. Finding 9 is a decision rather than a defect.
 
 ## 1. Agent-writable rc files execute pre-firewall at every boot
 
-**`internal/guest/files/scripts/update-agent-clis.sh:20`** — severity: high
+**`internal/guest/files/scripts/update-agent-clis.sh:20`** — severity: high —
+**FIXED**
+
+*The review understated this.* Alongside the login shell it names, the same
+function set `PATH` with the agent's own `~/.local/bin` **first**, so the `curl`
+and `bash` in `curl -fsSL … | bash` resolved through a directory the agent
+writes. A planted `~/.local/bin/curl` ran pre-firewall just as readily as a
+planted `~/.profile`, and dropping `-l` alone would have left that open. Both
+were confirmed by planting canaries and running the real script:
+
+```
+VECTOR A FIRED: agent ~/.profile executed pre-firewall
+VECTOR B FIRED: agent ~/.local/bin/curl executed pre-firewall
+```
+
+*Fix as applied:* `bash -c` instead of `-lc`; a PATH of system directories only
+(the installers write into `$HOME` regardless of what is on PATH); and
+`BASH_ENV`/`ENV` cleared, since those are the one file a non-interactive shell
+still sources. After the change both canaries stayed unfired and both installers
+still completed without warnings. The suite now plants the same two canaries,
+runs the update script, and asserts neither fires — a behavioural guard rather
+than a check that the script merely looks right.
+
+*Also fixed in passing:* OpenCode was installed to `~/.opencode/bin`, which was
+on no PATH the agent ever saw, so the install was pointless. That directory is
+now in `sandbox-exec`'s PATH and the suite asserts the agent can run both CLIs —
+nothing had verified they were usable at all.
+
+*Not adopted:* moving the CLI update to after the firewall, which would remove
+the unrestricted window entirely rather than fencing it off. Every domain the
+installers use is already allowlisted, so it is plausible, but it would need
+proxy environment plumbed into this step and would turn a vendor changing a
+download host into a failed update. Worth revisiting; the window now only runs
+vendor code, which installing their CLI implies trusting anyway.
 
 `run_as_agent` invokes `bash -lc`, a **login** shell, which sources
 `/home/devuser/.profile` and `.bashrc`. Those files are owned by the agent and
@@ -61,10 +96,9 @@ Squid**.
 with completely unfiltered egress. The allowlist never sees the traffic and
 `proxy-log` shows nothing.
 
-*Fix direction:* drop `-l` (the explicit `env` block already supplies `HOME`,
-`PATH`, and `XDG_RUNTIME_DIR`, so the login shell buys nothing), and/or make the
-agent's shell rc files root-owned like the `.claude` tree. Dropping `-l` is the
-cheap, targeted change.
+*Note:* the original direction — "drop `-l`, it's the cheap targeted change" —
+would have fixed the named symptom and left the PATH vector wide open. Worth
+remembering when a finding names one instance of a pattern.
 
 ## 2. Credential deny rules are lost on restart while the secrets persist
 
@@ -305,11 +339,11 @@ loud warning.
 
 ## Remaining triage order
 
-Findings 3, 4, 5, 6, 7 and 8 are fixed; 2 is closed by removal. What is left, in the
+Findings 1, 3, 4, 5, 6, 7 and 8 are fixed; 2 is closed by removal. What is left, in the
 order I would take it:
 
-1. **1** — drop `-l` from `run_as_agent`; removes an unfiltered-egress channel.
-   The last open finding with a security consequence.
-2. **10** — re-add the boot-time API reachability warning.
-3. **9** — decide whether CI should run the VM suite now that GitHub runners
-   expose KVM.
+1. **10** — re-add the boot-time API reachability warning. Small, and it turns a
+   silently unresponsive agent into a named diagnostic.
+2. **9** — decide whether CI should run the VM suite now that GitHub runners
+   expose KVM. A decision rather than a defect, but the suite has grown to 90
+   assertions and caught two bugs this session that only a clean guest showed.

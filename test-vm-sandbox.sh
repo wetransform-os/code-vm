@@ -224,6 +224,31 @@ assert_fails "agent cannot write /etc" \
     agent bash -c "echo x > /etc/code-vm-probe"
 
 echo ""
+echo "── Agent CLIs ────────────────────────────────────────────────────"
+
+assert_ok "the agent can run claude" agent claude --version
+assert_ok "the agent can run opencode" agent opencode --version
+
+# The CLI update runs before the firewall closes — the one window in the VM's
+# life with unrestricted egress, where anything the agent influenced would
+# exfiltrate without leaving a proxy-log entry. Plant both known injection
+# points and confirm neither fires.
+adm bash -c 'echo "touch /tmp/canary-rc" >> /home/'"$AGENT_USER"'/.profile
+    mkdir -p /home/'"$AGENT_USER"'/.local/bin
+    printf "#!/bin/bash\ntouch /tmp/canary-path\nexec /usr/bin/curl \"\$@\"\n" > /home/'"$AGENT_USER"'/.local/bin/curl
+    chmod +x /home/'"$AGENT_USER"'/.local/bin/curl
+    rm -f /tmp/canary-rc /tmp/canary-path' > /dev/null 2>&1
+adm /usr/local/lib/sandbox/update-agent-clis.sh > /dev/null 2>&1
+
+assert_fails "the agent's ~/.profile does not run during the pre-firewall CLI update" \
+    adm test -e /tmp/canary-rc
+assert_fails "an agent PATH entry cannot shadow commands in the CLI update" \
+    adm test -e /tmp/canary-path
+
+adm bash -c 'rm -f /home/'"$AGENT_USER"'/.local/bin/curl /tmp/canary-rc /tmp/canary-path
+    sed -i "/canary-rc/d" /home/'"$AGENT_USER"'/.profile' > /dev/null 2>&1
+
+echo ""
 echo "── Docker networking ─────────────────────────────────────────────"
 
 assert_ok "docker build works" \
