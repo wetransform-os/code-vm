@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"text/template"
 
 	"github.com/wetransform/code-vm/internal/config"
 	"github.com/wetransform/code-vm/internal/guest"
@@ -92,6 +93,43 @@ func TestRenderIndentsDataFileContent(t *testing.T) {
 	}
 	if !strings.Contains(out, "\n    printf '%s\\n' \"a: b\"\n") {
 		t.Error("data file content must be reproduced verbatim inside the block scalar")
+	}
+}
+
+// Lima evaluates mode:data content as a Go template with no opt-out. Raw
+// gomplate syntax fails its parse and triggers a "Couldn't process data
+// content" warning on every limactl invocation, so every "{{" must be
+// escaped as {{"{{"}} — which Lima's engine renders back to the original.
+func TestRenderEscapesGuestTemplateSyntax(t *testing.T) {
+	files := []guest.DataFile{{
+		Path:        "/usr/local/share/sandbox-templates/example.tpl",
+		Permissions: "0444",
+		Content:     "{{- range $k, $v := (ds \"ctx\").secrets -}}\n{{$k}}={{$v}}\n{{end -}}\n",
+	}}
+	out, err := Render(testConfig(), testParams(files))
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if !strings.Contains(out, `{{"{{"}}- range $k, $v := (ds "ctx").secrets -}}`) {
+		t.Error("gomplate action openers must be escaped for Lima's template engine")
+	}
+	if strings.Contains(out, "\n    {{- range") {
+		t.Error("raw {{ must not survive into a data entry: Lima warns on every invocation")
+	}
+
+	// Round-trip: executing the escaped content as a Go template (what Lima
+	// does in the guest) must reproduce the original bytes.
+	escaped := escapeGuestTemplate(files[0].Content)
+	tpl, err := template.New("roundtrip").Parse(escaped)
+	if err != nil {
+		t.Fatalf("escaped content must parse as a Go template, got: %v", err)
+	}
+	var b strings.Builder
+	if err := tpl.Execute(&b, nil); err != nil {
+		t.Fatalf("escaped content must execute cleanly, got: %v", err)
+	}
+	if b.String() != files[0].Content {
+		t.Errorf("round trip mismatch:\n--- got ---\n%s\n--- want ---\n%s", b.String(), files[0].Content)
 	}
 }
 

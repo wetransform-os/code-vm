@@ -446,6 +446,7 @@ assert_ok "open mode allows direct egress without the proxy" \
     curl -fsS -o /dev/null --max-time 20 https://example.org
 assert_fails "open mode still blocks DNS tunneling" \
     agent timeout 10 nslookup example.org 1.1.1.1
+# shellcheck disable=SC2016 # the gateway lookup must expand inside the guest
 assert_fails "open mode still blocks the host gateway" \
     agent bash -c 'timeout 5 bash -c "echo > /dev/tcp/$(ip route show default | awk "{print \$3; exit}")/22"'
 

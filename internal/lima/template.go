@@ -34,6 +34,16 @@ func provisionEnv(c config.Config, p RenderParams) guest.DataFile {
 	return guest.DataFile{Path: "/etc/sandbox/provision.env", Permissions: "0444", Content: b.String()}
 }
 
+// escapeGuestTemplate makes file content safe for Lima's data entries. Lima
+// evaluates every `mode: data` content as a Go template (for {{.UID}}-style
+// guest variables) with no opt-out; raw gomplate templates fail that parse and
+// Lima prints a "Couldn't process data content" warning on every invocation
+// before falling back to the raw bytes. Escaping each "{{" as {{"{{"}} lets
+// Lima's engine parse and execute cleanly, reproducing the original bytes.
+func escapeGuestTemplate(s string) string {
+	return strings.ReplaceAll(s, "{{", `{{"{{"}}`)
+}
+
 // indent prefixes every non-empty line with n spaces. YAML block scalars
 // reproduce content verbatim, so this is all that is needed to embed
 // arbitrary script bodies safely.
@@ -57,7 +67,10 @@ func Render(c config.Config, p RenderParams) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tpl, err := template.New("lima").Funcs(template.FuncMap{"indent": indent}).Parse(raw)
+	tpl, err := template.New("lima").Funcs(template.FuncMap{
+		"indent":     indent,
+		"escapeData": escapeGuestTemplate,
+	}).Parse(raw)
 	if err != nil {
 		return "", fmt.Errorf("parse Lima template: %w", err)
 	}

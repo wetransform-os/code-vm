@@ -63,7 +63,7 @@ provision:
   permissions: "{{.Permissions}}"
   overwrite: true
   content: |
-{{indent 4 .Content}}
+{{indent 4 (escapeData .Content)}}
 {{- end}}
 - mode: system
   script: |
