@@ -141,6 +141,106 @@ else
 fi
 
 echo ""
+echo "── Firewall ──────────────────────────────────────────────────────"
+
+VERIFY=$(adm cat /run/firewall-verify)
+for kv in "OUTPUT_POLICY=DROP" "UDP_DROP=yes" "PROXY_UID_RULE=yes" \
+    "AGENT_GATEWAY_REJECT=yes" "SQUID_RUNNING=yes"; do
+    if echo "$VERIFY" | grep -qx "$kv"; then
+        pass "firewall self-verify: $kv"
+    else
+        fail "firewall self-verify: $kv (got: $(echo "$VERIFY" | tr '\n' ' '))"
+    fi
+done
+
+# No -f here: the API root returns 404, and for HTTPS a Squid denial breaks
+# the CONNECT tunnel itself, so any completed HTTP exchange proves reachability.
+assert_ok "allowlisted domain reachable through the proxy" \
+    agent curl -sS -o /dev/null --max-time 20 https://api.anthropic.com
+assert_fails "non-allowlisted domain blocked" \
+    agent curl -fsS -o /dev/null --max-time 20 https://example.org
+assert_fails "direct egress bypassing the proxy is blocked" \
+    agent env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
+    curl -fsS -o /dev/null --max-time 20 https://example.org
+assert_fails "DNS tunneling to an external resolver is blocked" \
+    agent timeout 10 nslookup example.org 1.1.1.1
+
+if [ "$(adm sh -c 'ls /run/sandbox/squid-allow.d | tr "\n" " "')" = "00-base.conf " ]; then
+    pass "allowlist fragment dir holds only the base fragment after boot"
+else
+    fail "allowlist fragment dir holds only the base fragment after boot"
+fi
+
+echo ""
+echo "── Settings lock ─────────────────────────────────────────────────"
+
+SETTINGS="/home/$AGENT_USER/.claude/settings.json"
+if [ "$(adm stat -c '%U:%G %a' "$SETTINGS")" = "root:$AGENT_USER 444" ]; then
+    pass "settings.json is root-owned and read-only"
+else
+    fail "settings.json is root-owned and read-only (got $(adm stat -c '%U:%G %a' "$SETTINGS"))"
+fi
+
+assert_fails "agent cannot write settings.json" \
+    agent bash -c "echo '{}' > $SETTINGS"
+assert_fails "agent cannot write settings.local.json" \
+    agent bash -c "echo '{}' > /home/$AGENT_USER/.claude/settings.local.json"
+assert_fails "agent cannot write /etc" \
+    agent bash -c "echo x > /etc/code-vm-probe"
+
+echo ""
+echo "── Docker networking ─────────────────────────────────────────────"
+
+assert_ok "docker build works" \
+    agent bash -c 'printf "FROM alpine:3.23\nRUN echo ok\n" | docker build -q -t code-vm-test:latest -'
+# Rootless dockerd ACCEPTS --privileged, but the capabilities it grants are
+# confined to the user namespace (observed: the design expected an outright
+# refusal). The invariant that matters is that a privileged container still
+# cannot touch host kernel state.
+assert_fails "privileged containers cannot write host kernel state" \
+    agent docker run --rm --privileged alpine:3.23 sh -c 'echo 1 > /proc/sys/kernel/sysrq'
+
+COMPOSE_DIR="$PROJECTS_ROOT/.code-vm-compose-test"
+mkdir -p "$COMPOSE_DIR"
+cat > "$COMPOSE_DIR/compose.yaml" << 'YAML'
+services:
+  server:
+    image: alpine:3.23
+    command: ["sleep", "60"]
+  client:
+    image: alpine:3.23
+    command: ["sleep", "60"]
+YAML
+(cd "$COMPOSE_DIR" && agent docker compose up -d > /dev/null 2>&1)
+if (cd "$COMPOSE_DIR" && agent docker compose exec -T client getent hosts server > /dev/null 2>&1); then
+    pass "compose service-name DNS resolves"
+else
+    fail "compose service-name DNS resolves"
+fi
+(cd "$COMPOSE_DIR" && agent docker compose down -v > /dev/null 2>&1)
+rm -rf "$COMPOSE_DIR"
+
+echo ""
+echo "── Resource limits ───────────────────────────────────────────────"
+
+if adm systemctl show "user-$(id -u).slice" -p TasksMax | grep -q "TasksMax=2048"; then
+    pass "TasksMax is applied to the agent slice"
+else
+    fail "TasksMax is applied to the agent slice"
+fi
+
+echo ""
+echo "── Host exposure ─────────────────────────────────────────────────"
+
+# The portForwards ignore rule must cover wildcard binds: without guestIP
+# 0.0.0.0 + proto any, Lima forwarded the guest's Squid port to the host.
+if ss -tln 2> /dev/null | grep -q ':3128 '; then
+    fail "guest Squid port is not forwarded to the host"
+else
+    pass "guest Squid port is not forwarded to the host"
+fi
+
+echo ""
 echo "================================================================"
 echo "  PASS: $PASS   FAIL: $FAIL"
 echo "================================================================"
