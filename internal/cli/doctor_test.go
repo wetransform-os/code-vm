@@ -1,6 +1,10 @@
 package cli
 
-import "testing"
+import (
+	"os"
+	"os/exec"
+	"testing"
+)
 
 func TestParseLimaVersion(t *testing.T) {
 	tests := []struct {
@@ -53,5 +57,41 @@ func TestAtLeastLimaVersion(t *testing.T) {
 				t.Errorf("atLeastLimaVersion(%q) error = %v, wantErr %v", tc.in, err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// virtiofsd is a helper binary that distributions install outside PATH, so a
+// PATH-only check reported it missing on hosts where Lima was using it happily.
+func TestCheckVirtiofsdAcceptsLibexecLocations(t *testing.T) {
+	if err := checkVirtiofsd(); err != nil {
+		t.Skipf("virtiofsd not installed on this host: %v", err)
+	}
+	// Present somewhere: either on PATH or at one of the known paths.
+	onPath := false
+	if _, err := exec.LookPath("virtiofsd"); err == nil {
+		onPath = true
+	}
+	found := onPath
+	for _, p := range virtiofsdPaths {
+		if _, err := os.Stat(p); err == nil {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("checkVirtiofsd passed but the binary is at none of the locations it checks")
+	}
+}
+
+func TestVirtiofsdPathsCoverDebianAndFedoraLayouts(t *testing.T) {
+	want := map[string]bool{"/usr/lib/virtiofsd": false, "/usr/libexec/virtiofsd": false}
+	for _, p := range virtiofsdPaths {
+		if _, ok := want[p]; ok {
+			want[p] = true
+		}
+	}
+	for p, ok := range want {
+		if !ok {
+			t.Errorf("virtiofsdPaths must include %s", p)
+		}
 	}
 }

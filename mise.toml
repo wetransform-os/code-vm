@@ -3,6 +3,9 @@ go = "1.26.5"
 golangci-lint = "2.12.2"
 shellcheck = "0.11.0"
 shfmt = "3.13.1"
+# Used by test-vm-sandbox.sh to edit the host config. Pinned so the suite does
+# not depend on whatever yq the machine happens to have — CI has none.
+yq = "4.53.3"
 
 [tasks.build]
 description = "Build the code-vm binary"

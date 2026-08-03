@@ -211,8 +211,12 @@ mise run lint        # golangci-lint + shellcheck
 mise run test:vm     # full VM suite; requires KVM
 ```
 
-CI runs everything except `test:vm`, which needs nested KVM that GitHub-hosted
-runners do not reliably provide. Run it locally, or on a KVM-capable runner.
+CI runs `fmt-check`, `lint`, `test:unit` and `build` on every push. The VM suite
+needs nested KVM and a Lima install, so it lives in a separate `vm-suite` job
+that is **triggered manually** from the Actions tab (`workflow_dispatch`) while we
+confirm the stack comes up on a GitHub runner at all. Run it locally with
+`mise run test:vm` — and do, before anything that touches a security control,
+because CI showing green does not yet mean the suite passed.
 
 The VM suite asserts the primitives testcontainers depends on — API socket,
 socket bind-mounting, Ryuk, published ports — rather than driving a JVM

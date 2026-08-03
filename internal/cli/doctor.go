@@ -70,7 +70,7 @@ func newDoctorCmd() *cobra.Command {
 			checks := []check{
 				{"limactl on PATH", checkBinary("limactl")},
 				{"Lima version", checkLimaVersion(ctx)},
-				{"virtiofsd on PATH", checkBinary("virtiofsd")},
+				{"virtiofsd installed", checkVirtiofsd()},
 				{"KVM accessible", checkKVM()},
 				{"config valid", checkConfig()},
 			}
@@ -97,6 +97,32 @@ func checkBinary(name string) error {
 		return fmt.Errorf("not found on PATH (install it, e.g. via your package manager)")
 	}
 	return nil
+}
+
+// virtiofsdPaths are the locations distributions install virtiofsd to. It is a
+// helper binary rather than a user-facing command, so packages routinely place
+// it outside PATH — Debian and Ubuntu use /usr/lib, Fedora /usr/libexec — and
+// Lima finds it there. Checking only PATH reported it missing on hosts where it
+// was installed and working.
+var virtiofsdPaths = []string{
+	"/usr/lib/virtiofsd",
+	"/usr/libexec/virtiofsd",
+	"/usr/lib/qemu/virtiofsd",
+	"/usr/libexec/qemu/virtiofsd",
+	"/usr/local/lib/virtiofsd",
+	"/usr/local/libexec/virtiofsd",
+}
+
+func checkVirtiofsd() error {
+	if _, err := exec.LookPath("virtiofsd"); err == nil {
+		return nil
+	}
+	for _, p := range virtiofsdPaths {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return nil
+		}
+	}
+	return fmt.Errorf("not found on PATH or in %v (install the virtiofsd package)", virtiofsdPaths)
 }
 
 func checkLimaVersion(ctx context.Context) error {
