@@ -10,10 +10,11 @@ correctness angle, then an independent adversarial verifier per candidate
 location. 35 agents; all ten findings below survived verification as
 `CONFIRMED`. Line references were re-checked against the working tree after the
 review completed.
-**Status:** findings 1, 3, 4, 5, 6, 7 and 8 are **fixed**; finding 2 is **closed
-by removal**. Findings 9 and 10 are open, and neither has a security
-consequence. Each section below carries its own status line; `git log` has the
-commits.
+**Status:** every finding is addressed — 1, 3, 4, 5, 6, 7, 8, 9 and 10 **fixed**,
+2 **closed by removal**. Finding 9's fix is a manually dispatched CI job rather
+than a push trigger, so the gap it describes is narrowed rather than closed until
+that job has proven it runs on a GitHub runner. Each section below carries its
+own status line; `git log` has the commits.
 
 **Plus one issue the review did not surface.** `.sandbox-secrets.yaml` was read
 from the agent-writable workspace and its `source:` values executed **on the
@@ -42,7 +43,7 @@ Findings 1 and 4 were the clearest cases — an unfiltered-egress window and a
 firewall check that stopped being fatal. Both turned out to be worse than the
 review described once examined. Finding 3 is the exception: a genuine
 port bug, where a group name was assumed to exist because it happened to on the
-development host. Finding 9 is a decision rather than a defect.
+development host. Finding 9 was a decision rather than a defect.
 
 ---
 
@@ -302,7 +303,31 @@ than truncate.
 
 ## 9. The security suite is excluded from CI on a stale premise
 
-**`.github/workflows/ci.yml:3`** — severity: medium; **plan decision worth revisiting**
+**`.github/workflows/ci.yml:3`** — severity: medium — **FIXED (manual trigger for now)**
+
+*Fix as applied:* a second `vm-suite` job runs the full suite, gated to
+`workflow_dispatch` only. It grants access to `/dev/kvm` via a udev rule,
+installs `qemu-system-x86` and `virtiofsd` from apt and Lima 2.2.0 from its
+release tarball, points `projectsRoot` at the checkout's parent so `code-vm` will
+run there, and dumps the boot journal and cloud-init log on failure — first boot
+is where this is most likely to break, and inside the guest is where the job log
+cannot see it.
+
+Manual rather than on push deliberately: GitHub's Linux runners expose
+`/dev/kvm`, but whether this whole stack comes up on one has never been observed.
+Dispatch it a few times; if it proves reliable, add `push`/`pull_request` to the
+trigger and drop the `if`. Until then a PR can still regress a security control
+and show green, so the gap this finding describes is narrowed, not closed.
+
+*Also fixed:* `yq` is now pinned in `mise.toml`. The suite has always used it to
+edit the host config, but nothing installed it — it worked locally only because
+the machine happened to have one, and CI has none.
+
+*And a false negative found while wiring this up:* `code-vm doctor` reported
+`virtiofsd` missing on a host where it was installed and Lima was using it
+happily. It checked only `PATH`, but distributions install it as a helper binary
+outside `PATH` — `/usr/lib` on Debian and Ubuntu, `/usr/libexec` on Fedora.
+`doctor` now checks those locations too, so the CI job can gate on it.
 
 CI runs `fmt-check`, `lint`, `test:unit`, and `build`, but not
 `mise run test:vm`. The sibling Docker sandbox runs its security suite on every
@@ -320,7 +345,26 @@ at first if runtime is a concern.
 
 ## 10. No post-firewall connectivity check at boot
 
-**`internal/guest/files/scripts/sandbox-boot.sh:19`** — severity: low
+**`internal/guest/files/scripts/sandbox-boot.sh:19`** — severity: low — **FIXED**
+
+*Fix as applied:* the boot sequence ends by reaching the API the way the agent
+does — as the agent, through the proxy — and warns with a pointer to
+`code-vm proxy-log denied` when it cannot. Running it as the agent rather than as
+root is the point: root bypasses the proxy via its own ACCEPT rule, so a
+root-side check would pass while the agent's path was broken. No `-f`, because
+the API root answers 404 and any completed exchange proves the path works.
+
+Non-fatal, and inside an `if` so the `ERR` trap added for finding 4 does not read
+a warning as a failed boot — an offline start should warn, not withhold the VM.
+Both paths were verified: a normal boot logs `API reachable through the proxy`
+with no failure marker, and the same script pointed at a dead proxy port exits 0,
+logs the warning, completes, and still leaves no marker.
+
+*A trap worth recording:* `sandbox-boot.sh` did not source
+`/etc/sandbox/provision.env`, so `$AGENT_UID` was unset. Under `set -u` that
+would have aborted the boot and tripped the failure marker, making every VM
+unusable — the check meant to diagnose breakage would have been the breakage. It
+sources it now.
 
 The container `entrypoint.sh` curled `https://api.anthropic.com` after the
 firewall closed and printed an explicit warning on failure. The VM boot sequence
@@ -332,18 +376,24 @@ parsing yields no allow rules on a Lima version whose nat-chain format differs.
 Every iptables self-check still passes, the verify file is written, `code-vm`
 starts normally, and every Claude API call hangs with no startup diagnostic.
 
-*Fix direction:* re-add the reachability probe as a final, non-fatal step with a
+*Original fix direction:* re-add the reachability probe as a final, non-fatal step with a
 loud warning.
 
 ---
 
-## Remaining triage order
+## Follow-ups
 
-Findings 1, 3, 4, 5, 6, 7 and 8 are fixed; 2 is closed by removal. What is left, in the
-order I would take it:
+Nothing from the review is outstanding. Three things it surfaced are left as
+deliberate decisions rather than defects:
 
-1. **10** — re-add the boot-time API reachability warning. Small, and it turns a
-   silently unresponsive agent into a named diagnostic.
-2. **9** — decide whether CI should run the VM suite now that GitHub runners
-   expose KVM. A decision rather than a defect, but the suite has grown to 90
-   assertions and caught two bugs this session that only a clean guest showed.
+1. **Promote the VM suite to run on push** once the dispatched job has shown it
+   works on a GitHub runner. Until then a PR can regress a security control and
+   still show green.
+2. **Move the CLI update after the firewall**, removing the last unrestricted-egress
+   window rather than fencing the agent out of it (finding 1). Needs proxy
+   environment plumbed into that step, and makes a vendor changing a download
+   host into a failed update.
+3. **A replacement for credential injection**, if one is wanted. The design doc
+   records what it must do differently: declare in host config, and either be
+   honest that the agent can read the credentials or keep them out of the guest
+   entirely.
