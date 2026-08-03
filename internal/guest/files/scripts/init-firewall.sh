@@ -5,8 +5,9 @@
 #   agent → http_proxy=localhost:3128 → Squid (domain ACL) → internet
 #   iptables: default-deny OUTPUT; only root and Squid exit directly
 #
-# Runs as root from sandbox-boot.sh, last in the sequence: closing egress
-# before the CLI updates would break them.
+# Runs as root from sandbox-boot.sh before anything that touches the network,
+# so no step in the boot sequence has unfiltered egress — including the agent
+# CLI update, which goes through Squid like everything else.
 #
 # The firewall mode (allowlist|audit|open) is read from a tmpfs file, so a VM
 # restart always reverts to allowlist. See set-firewall-mode.sh.
@@ -61,13 +62,13 @@ DEFAULT_DOMAINS=(
     .json-schema.org .schemastore.org
     .mise.jdx.dev .mise-versions.jdx.dev .mise-java.jdx.dev .mise.run .fnox.jdx.dev
     .dl.k8s.io .releases.hashicorp.com .get.helm.sh
-    .opentofu.org .registry.opentofu.org
+    .opentofu.org
     .services.gradle.org .plugins.gradle.org .plugins-artifacts.gradle.org
     .repo1.maven.org .repo.maven.apache.org
     .dl-cdn.alpinelinux.org .awscli.amazonaws.com
     # Container registries
-    .docker.io .docker.com .hub.docker.com
-    .production.cloudflare.docker.com .r2.cloudflarestorage.com
+    .docker.io .docker.com
+    .r2.cloudflarestorage.com
     .ghcr.io .gcr.io .quay.io .registry.k8s.io
 )
 
@@ -112,9 +113,16 @@ fi
 {
     echo "http_port 3128"
     echo ""
-    echo "# Security proxy, not a caching proxy"
-    echo "cache_dir null /tmp"
+    echo "# Security proxy, not a caching proxy. No cache_dir: the null store"
+    echo "# is not a supported type on current Squid, and cache deny all is"
+    echo "# what actually disables caching."
     echo "cache deny all"
+    echo ""
+    echo "# Squid's default is to wait 30 seconds for active connections on"
+    echo "# shutdown, so every restart — one per firewall mode switch — left the"
+    echo "# proxy refusing connections for half a minute. Nothing here needs a"
+    echo "# grace period: clients retry."
+    echo "shutdown_lifetime 1 second"
     echo ""
     echo "access_log /var/log/squid/access.log squid"
     echo ""
@@ -152,16 +160,26 @@ fi
 systemctl enable squid.service > /dev/null 2>&1 || true
 systemctl restart squid.service
 
+# Three consecutive connects, not one. A single successful connect is also what
+# a Squid instance about to be replaced by a queued restart looks like, and the
+# boot sequence goes on to install the agent CLIs through this port — which
+# failed with ECONNREFUSED when it accepted a socket that then closed.
 READY=false
-for _ in $(seq 1 20); do
+STREAK=0
+for _ in $(seq 1 60); do
     if (echo > /dev/tcp/localhost/3128) 2> /dev/null; then
-        READY=true
-        break
+        STREAK=$((STREAK + 1))
+        if [ "$STREAK" -ge 3 ]; then
+            READY=true
+            break
+        fi
+    else
+        STREAK=0
     fi
     sleep 0.5
 done
 if [ "$READY" != "true" ]; then
-    echo "[firewall] ERROR: Squid did not start within 10 seconds."
+    echo "[firewall] ERROR: Squid did not stay up within 30 seconds." >&2
     exit 1
 fi
 echo "[firewall] Squid ready on :3128"

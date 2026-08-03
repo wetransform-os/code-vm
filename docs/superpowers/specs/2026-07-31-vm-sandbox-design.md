@@ -204,14 +204,33 @@ fetch packages.
 `sandbox-boot.service` is the VM's equivalent of the container's
 `entrypoint.sh`: a single root `oneshot` unit running the same ordered sequence.
 
-1. Update the agent CLIs (Claude Code, OpenCode).
-2. Run `lock-settings.sh`.
-3. Run `init-firewall.sh`.
-4. Start `devuser`'s user services (rootless dockerd).
+1. Run `lock-settings.sh`.
+2. Run `init-firewall.sh`.
+3. Verify the agent can reach the API through the proxy (warn only).
+4. Update the agent CLIs (Claude Code, OpenCode) — through the proxy.
+5. Start `devuser`'s user services (rootless dockerd).
 
-The ordering is load-bearing: CLI updates need unrestricted egress, so the
-firewall closes after them — the same reason the container's entrypoint uses
-this order.
+**Revised during implementation.** The design originally put the CLI update
+first, mirroring the container's `entrypoint.sh`, on the premise that the
+installers need unrestricted egress. They do not: every host they use is already
+allowlisted, and both were observed installing cleanly through Squid. Keeping
+that premise had a cost — for as long as it held, one step per boot ran with no
+egress filtering and no audit trail, and a code review found the agent could
+reach into it through its own `~/.profile` or a planted `~/.local/bin/curl`
+(those are fenced off separately, and still are).
+
+With the update last, no step in the VM's life has unfiltered egress: a
+compromised installer is confined to the allowlist and recorded in the proxy log
+like any other traffic. The trade is that a vendor moving a download host becomes
+a failed update rather than an invisible one. That failure is a warning, not
+fatal, `code-vm proxy-log denied` names the blocked host, and `code-vm allow`
+fixes it — and the test suite asserts both CLIs are runnable, so the degradation
+cannot ship unnoticed.
+
+The remaining order is load-bearing: the settings lock must precede any agent
+process, and the connectivity check sits between the firewall and the update so
+that a failed install is preceded by a warning saying whether egress works at
+all.
 
 ### First-boot provisioning
 

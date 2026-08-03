@@ -3,12 +3,18 @@
 # sandbox-boot.sh — the VM's equivalent of the container's entrypoint.sh
 #
 # Ordered sequence, run as root once provisioning has finished:
-#   1. update the agent CLIs   — needs unrestricted egress
-#   2. lock the Claude config  — must precede any agent process
-#   3. initialise the firewall — closes egress, so it goes last
+#   1. lock the Claude config  — must precede any agent process
+#   2. initialise the firewall — nothing below it runs unfiltered
+#   3. check the agent's egress path actually works
+#   4. update the agent CLIs   — through the proxy, like everything else
 #
-# The order is load-bearing. It is the same order entrypoint.sh uses in the
-# container sandbox, for the same reason.
+# The container sandbox updates the CLIs first, because it assumed they needed
+# unrestricted egress. They do not: every host the installers use is
+# allowlisted, so they work through the proxy. Running them last means no step
+# in this VM's life has unfiltered egress, and a compromised installer is
+# confined to the allowlist and recorded in the proxy log like any other
+# traffic. The cost is that a vendor moving a download host turns into a failed
+# update rather than an invisible one — loud, and fixable with `code-vm allow`.
 ###############################################################################
 set -euo pipefail
 
@@ -18,7 +24,8 @@ set -euo pipefail
 . /etc/sandbox/provision.env
 
 FAIL_MARKER=/run/sandbox-boot-failed
-rm -f "$FAIL_MARKER"
+DONE_MARKER=/run/sandbox-boot-complete
+rm -f "$FAIL_MARKER" "$DONE_MARKER"
 
 # init-firewall.sh withholds /run/firewall-verify when its own checks fail, and
 # the Lima readiness probe waits for that file — so a failure already blocks the
@@ -33,7 +40,6 @@ trap 'on_failure $LINENO' ERR
 
 echo "[boot] Sandbox boot sequence starting"
 
-/usr/local/lib/sandbox/update-agent-clis.sh
 /usr/local/lib/sandbox/lock-settings.sh
 /usr/local/lib/sandbox/init-firewall.sh
 
@@ -60,5 +66,18 @@ else
     echo "[boot]          The firewall rules verified, so this is DNS, Squid or" >&2
     echo "[boot]          upstream connectivity. Check: code-vm proxy-log denied" >&2
 fi
+
+# Last, and through the proxy. Placed after the connectivity check so that when
+# the installers fail, the warning above has already said whether egress works
+# at all.
+/usr/local/lib/sandbox/update-agent-clis.sh
+
+# The readiness probe waits for this, not for the firewall's own verify file.
+# Those were the same thing while the CLI update ran first; now that it runs
+# last, gating on the firewall would let `limactl start` return while the
+# installers were still downloading — the agent could be asked to run a CLI that
+# was not there yet, and a prompt `code-vm stop` killed the install mid-flight.
+: > "$DONE_MARKER"
+chmod 0444 "$DONE_MARKER"
 
 echo "[boot] Sandbox boot sequence complete"

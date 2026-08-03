@@ -226,13 +226,19 @@ assert_fails "agent cannot write /etc" \
 echo ""
 echo "── Agent CLIs ────────────────────────────────────────────────────"
 
+# These must hold the moment `code-vm start` returns. The CLI update runs after
+# the firewall now, so readiness gates on the boot-complete marker rather than
+# the firewall's verify file — otherwise start returns mid-download and the CLIs
+# are intermittently absent.
+assert_ok "boot reported complete, not merely firewalled" \
+    adm test -f /run/sandbox-boot-complete
 assert_ok "the agent can run claude" agent claude --version
 assert_ok "the agent can run opencode" agent opencode --version
 
-# The CLI update runs before the firewall closes — the one window in the VM's
-# life with unrestricted egress, where anything the agent influenced would
-# exfiltrate without leaving a proxy-log entry. Plant both known injection
-# points and confirm neither fires.
+# The CLI update is root-driven but runs as the agent, so nothing the agent can
+# write may influence it. Plant both known injection points and confirm neither
+# fires. (It now also runs behind the proxy, so an injection would be filtered
+# and logged — this keeps it from executing at all.)
 adm bash -c 'echo "touch /tmp/canary-rc" >> /home/'"$AGENT_USER"'/.profile
     mkdir -p /home/'"$AGENT_USER"'/.local/bin
     printf "#!/bin/bash\ntouch /tmp/canary-path\nexec /usr/bin/curl \"\$@\"\n" > /home/'"$AGENT_USER"'/.local/bin/curl
@@ -311,10 +317,20 @@ echo "── code-vm allow ─────────────────�
 CONFIG_FILE="$HOME/.config/code-vm/config.yaml"
 cp "$CONFIG_FILE" "$CONFIG_FILE.suite-backup"
 
-if "$CODE_VM" allow --yes example.org 2>&1 | grep -q 'active now'; then
+ALLOW_OUT=$("$CODE_VM" allow --yes example.org 2>&1)
+if echo "$ALLOW_OUT" | grep -q 'active now'; then
     pass "allow reports the domain as applied live"
 else
-    fail "allow reports the domain as applied live"
+    fail "allow reports the domain as applied live (got: $ALLOW_OUT)"
+fi
+
+# Squid narrates every reconfigure. That output used to reach the caller, so an
+# invocation that refreshed the allowlist prefixed the command's own output with
+# proxy chatter.
+if echo "$ALLOW_OUT" | grep -qE 'Processing Configuration File|WARNING: Ignoring'; then
+    fail "allow output is free of Squid parser chatter"
+else
+    pass "allow output is free of Squid parser chatter"
 fi
 
 if yq -e '.extraDomains | contains([".example.org"])' "$CONFIG_FILE" > /dev/null 2>&1; then

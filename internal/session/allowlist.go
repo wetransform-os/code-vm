@@ -88,6 +88,17 @@ func ApplyAllowlist(ctx context.Context, d Deps) error {
 }
 
 // reloadSquid applies a changed configuration without dropping connections.
+//
+// Squid narrates every reconfigure — which files it parsed, which ACL entries it
+// considers redundant — and that was landing in the caller's output, so a
+// `code-vm -- cmd` invocation that happened to refresh the allowlist prefixed
+// the command's own output with proxy chatter. Merging stderr into stdout in the
+// guest lets AdminOutput capture all of it: discarded when the reload works,
+// reported when it does not.
 func reloadSquid(ctx context.Context, d Deps) error {
-	return d.Client.Admin(ctx, []string{"squid", "-k", "reconfigure"})
+	out, err := d.Client.AdminOutput(ctx, []string{"bash", "-c", "squid -k reconfigure 2>&1"})
+	if err != nil {
+		return fmt.Errorf("reload squid: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }

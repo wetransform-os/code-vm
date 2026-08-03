@@ -84,17 +84,19 @@ provision:
     exec /usr/local/lib/sandbox/provision-system.sh
 
 probes:
-# init-firewall.sh writes /run/firewall-verify last, and only once its own
-# checks have passed. Waiting on it makes `limactl start` return solely when the
-# egress firewall is verified up, so a code-vm session can never land in an
-# unfiltered VM. sandbox-boot.sh touches the failure marker on any error, which
-# turns a broken boot into an immediate failure instead of a silent timeout.
+# sandbox-boot.sh writes /run/sandbox-boot-complete as its final act, and only
+# reaches it if the firewall verified (init-firewall.sh exits non-zero otherwise)
+# and the agent CLI update has finished. Waiting on that file — rather than on
+# the firewall's own verify file — is what makes `limactl start` return only when
+# the VM is genuinely usable: no unfiltered egress, and no CLI still downloading.
+# The failure marker turns a broken boot into an immediate failure rather than a
+# silent five-minute timeout.
 - mode: readiness
   description: sandbox boot sequence to finish
   script: |
     #!/bin/bash
     set -eu
-    timeout 300s bash -c 'until [ -f /run/firewall-verify ]; do
+    timeout 300s bash -c 'until [ -f /run/sandbox-boot-complete ]; do
       if [ -f /run/sandbox-boot-failed ]; then
         echo "the sandbox boot sequence failed; the firewall is not up" >&2
         exit 1
