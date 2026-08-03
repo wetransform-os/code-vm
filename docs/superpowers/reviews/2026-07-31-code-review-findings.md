@@ -77,12 +77,11 @@ on no PATH the agent ever saw, so the install was pointless. That directory is
 now in `sandbox-exec`'s PATH and the suite asserts the agent can run both CLIs —
 nothing had verified they were usable at all.
 
-*Not adopted:* moving the CLI update to after the firewall, which would remove
-the unrestricted window entirely rather than fencing it off. Every domain the
-installers use is already allowlisted, so it is plausible, but it would need
-proxy environment plumbed into this step and would turn a vendor changing a
-download host into a failed update. Worth revisiting; the window now only runs
-vendor code, which installing their CLI implies trusting anyway.
+*Since adopted:* the window itself is gone. The CLI update now runs after the
+firewall, through the proxy, so nothing in the boot sequence has unfiltered
+egress and a compromised installer is confined and logged. The hardening above
+still stands — the step is root-driven and runs as the agent, so agent-authored
+input must not reach it — but it is no longer the last line of defence.
 
 `run_as_agent` invokes `bash -lc`, a **login** shell, which sources
 `/home/devuser/.profile` and `.bashrc`. Those files are owned by the agent and
@@ -383,17 +382,20 @@ loud warning.
 
 ## Follow-ups
 
-Nothing from the review is outstanding. Three things it surfaced are left as
-deliberate decisions rather than defects:
+Nothing from the review is outstanding. Two things are left as decisions rather
+than defects:
 
 1. **Promote the VM suite to run on push** once the dispatched job has shown it
    works on a GitHub runner. Until then a PR can regress a security control and
    still show green.
-2. **Move the CLI update after the firewall**, removing the last unrestricted-egress
-   window rather than fencing the agent out of it (finding 1). Needs proxy
-   environment plumbed into that step, and makes a vendor changing a download
-   host into a failed update.
-3. **A replacement for credential injection**, if one is wanted. The design doc
+2. **A replacement for credential injection**, if one is wanted. The design doc
    records what it must do differently: declare in host config, and either be
    honest that the agent can read the credentials or keep them out of the guest
    entirely.
+
+A third — moving the CLI update behind the firewall, so no step has unfiltered
+egress — has since been **done**. It surfaced two latent defects on the way:
+Squid's 30-second `shutdown_lifetime` took the proxy down for half a minute on
+every firewall mode switch, and the readiness probe gated on the firewall's
+verify file, so `limactl start` returned while the installers were still
+downloading. Both fixed; see the design doc's boot-sequence section.
