@@ -333,6 +333,7 @@ runs in the guest and does not need it exposed.
 `~/.config/code-vm/config.yaml`:
 
 ```yaml
+instance: code-sandbox
 projectsRoot: ~/projects
 extraMounts:
   - ~/work/other-repo
@@ -483,6 +484,16 @@ should be explicit rather than mediated by a cross-repo abstraction.
 
 `test-vm-sandbox.sh` ports the existing suite, driven from the host through
 `code-vm`.
+
+**Revised during implementation.** The suite originally drove the same instance
+and config as daily use, which meant running it destroyed that VM's state —
+Claude authentication, the image cache — and an interrupted run left a stale
+mount in the real config. The config now names its instance, so the suite builds
+a throwaway VM from a scratch config passed via `--config` and deletes it
+afterwards. It records the default instance's status and machine-id at startup
+and asserts both unchanged at the end: the first run of the isolated suite found
+that `code-vm firewall` still built its own client and had been reconfiguring
+whichever VM was in daily use.
 
 Ported assertions:
 

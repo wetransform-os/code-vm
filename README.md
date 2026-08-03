@@ -75,6 +75,7 @@ code-vm                          # interactive shell
 `~/.config/code-vm/config.yaml`:
 
 ```yaml
+instance: code-sandbox        # the Lima instance this config drives
 projectsRoot: ~/projects      # the one directory always shared
 extraMounts:                  # added by `code-vm mount`
   - ~/work/other-repo
@@ -210,6 +211,15 @@ mise run test:unit   # Go tests: config, template rendering, argv construction
 mise run lint        # golangci-lint + shellcheck
 mise run test:vm     # full VM suite; requires KVM
 ```
+
+`mise run test:vm` builds its own throwaway VM (`code-sandbox-test`, minimal
+resources) from a scratch config and deletes it afterwards, so it never touches
+the instance you work in — it asserts that, comparing the default instance's
+state and machine-id before and after. `CODE_VM_KEEP=1` leaves the test VM up for
+debugging a failure.
+
+Because `instance` is a config key, the same mechanism runs two VMs deliberately:
+point `--config` at another file naming another instance.
 
 CI runs `fmt-check`, `lint`, `test:unit` and `build` on every push. The VM suite
 needs nested KVM and a Lima install, so it lives in a separate `vm-suite` job
