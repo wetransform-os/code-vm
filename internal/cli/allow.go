@@ -119,10 +119,7 @@ func mergeDomains(a, b []string) []string {
 // and open mode the generated config has no such ACL lines, and the result is
 // empty — the only cost is that a redundant entry may be offered.
 func guestAllowedDomains(ctx context.Context, cl lima.Client) []string {
-	out, err := cl.AdminOutput(ctx, []string{"cat", "/etc/squid/squid.conf"})
-	if err != nil {
-		return nil
-	}
+	out := cl.ReadFile(ctx, "/etc/squid/squid.conf")
 	var domains []string
 	for _, line := range splitLines(string(out)) {
 		if d := strings.TrimPrefix(line, squidACLPrefix); d != line {
@@ -285,11 +282,7 @@ func collectCandidates(ctx context.Context, cl lima.Client, args []string, runni
 		return nil, fmt.Errorf("reading denied domains needs a running VM; start it with `code-vm start`, " +
 			"or pass domains explicitly: code-vm allow example.com")
 	}
-	log, err := cl.AdminOutput(ctx, []string{"cat", "/var/log/squid/access.log"})
-	if err != nil {
-		return nil, fmt.Errorf("read the proxy log: %w", err)
-	}
-	candidates := parseDeniedDomains(string(log))
+	candidates := parseDeniedDomains(string(cl.ReadFile(ctx, "/var/log/squid/access.log")))
 	if len(candidates) == 0 {
 		fmt.Fprintln(out, "No denied requests in the proxy log.")
 	}

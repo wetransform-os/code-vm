@@ -35,8 +35,8 @@ func newStatusCmd() *cobra.Command {
 				return nil
 			}
 			fmt.Fprintln(out, "firewall:")
-			verify, err := cl.AdminOutput(cmd.Context(), []string{"cat", "/run/firewall-verify"})
-			if err != nil {
+			verify := cl.ReadFile(cmd.Context(), "/run/firewall-verify")
+			if len(verify) == 0 {
 				fmt.Fprintln(out, "  unavailable")
 				return nil
 			}

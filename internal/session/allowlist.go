@@ -62,8 +62,10 @@ func FragmentContent(domains []string) string {
 // workspace.
 func ApplyAllowlist(ctx context.Context, d Deps) error {
 	dst := fragmentDir + "/" + HostFragmentName
-	// A read failure means the fragment is absent, which counts as a change.
-	current, _ := d.Client.AdminOutput(ctx, []string{"cat", dst})
+	// Absent counts as a change. ReadFile keeps cat's "No such file" off the
+	// caller's terminal: this runs on every invocation, and the fragment is
+	// legitimately missing whenever no extra domains are configured.
+	current := d.Client.ReadFile(ctx, dst)
 
 	if len(d.Config.ExtraDomains) == 0 {
 		if len(current) == 0 {

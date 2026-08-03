@@ -181,6 +181,23 @@ else
 fi
 rmdir "$WORK_SUBDIR"
 
+# A command's output must be exactly its own. Session setup probes guest state
+# on every invocation, and those reads used to leak cat's "No such file or
+# directory" for the allowlist fragment — which is absent whenever no extra
+# domains are configured, i.e. by default.
+QUIET_OUT=$(agent true 2>&1)
+if [ -z "$QUIET_OUT" ]; then
+    pass "an agent command produces no output of its own"
+else
+    fail "an agent command leaked session-setup noise: [$QUIET_OUT]"
+fi
+
+if [ "$(agent echo hello 2>&1)" = "hello" ]; then
+    pass "an agent command's output is exactly its own"
+else
+    fail "an agent command's output is exactly its own (got: $(agent echo hello 2>&1))"
+fi
+
 if agent env | grep -q '^DOCKER_HOST=unix:///run/user/'; then
     pass "DOCKER_HOST is exported to the agent"
 else

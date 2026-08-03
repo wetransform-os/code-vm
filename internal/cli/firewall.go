@@ -35,10 +35,7 @@ func setFirewallModeArgs(mode string) ([]string, error) {
 // file. Shared with `code-vm allow`, which reports whether a new domain took
 // effect live or only once allowlist mode returns.
 func currentFirewallMode(ctx context.Context, cl lima.Client) (string, error) {
-	verify, err := cl.AdminOutput(ctx, []string{"cat", "/run/firewall-verify"})
-	if err != nil {
-		return "", fmt.Errorf("read firewall state: %w", err)
-	}
+	verify := cl.ReadFile(ctx, "/run/firewall-verify")
 	for _, line := range splitLines(string(verify)) {
 		if strings.HasPrefix(line, "FIREWALL_MODE=") {
 			return strings.TrimPrefix(line, "FIREWALL_MODE="), nil

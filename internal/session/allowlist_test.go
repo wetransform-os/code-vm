@@ -23,7 +23,13 @@ func (f *fakeRunner) Run(_ context.Context, args ...string) error {
 
 func (f *fakeRunner) Output(_ context.Context, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, args)
-	return f.out[strings.Join(args, " ")], nil
+	joined := strings.Join(args, " ")
+	for match, content := range f.out {
+		if strings.Contains(joined, match) {
+			return content, nil
+		}
+	}
+	return nil, nil
 }
 
 func (f *fakeRunner) ranAny(substr string) bool {
@@ -85,9 +91,7 @@ func TestApplyAllowlistInstallsFragmentAndReloadsSquid(t *testing.T) {
 
 func TestApplyAllowlistSkipsReloadWhenUnchanged(t *testing.T) {
 	existing := FragmentContent([]string{"registry.example.com"})
-	r := &fakeRunner{out: map[string][]byte{
-		strings.Join(lima.Client{}.AdminArgs([]string{"cat", fragmentPath()}), " "): []byte(existing),
-	}}
+	r := &fakeRunner{out: map[string][]byte{fragmentPath(): []byte(existing)}}
 	d := testDeps(t, r)
 	d.Config.ExtraDomains = []string{"registry.example.com"}
 	if err := ApplyAllowlist(context.Background(), d); err != nil {
@@ -113,8 +117,7 @@ func TestApplyAllowlistNoDomainsAndNoFragmentIsNoOp(t *testing.T) {
 // domain would stay allowed for the rest of the VM's lifetime.
 func TestApplyAllowlistRemovesFragmentWhenDomainsCleared(t *testing.T) {
 	r := &fakeRunner{out: map[string][]byte{
-		strings.Join(lima.Client{}.AdminArgs([]string{"cat", fragmentPath()}), " "): []byte(
-			FragmentContent([]string{"registry.example.com"})),
+		fragmentPath(): []byte(FragmentContent([]string{"registry.example.com"})),
 	}}
 	d := testDeps(t, r)
 	d.Config.ExtraDomains = nil

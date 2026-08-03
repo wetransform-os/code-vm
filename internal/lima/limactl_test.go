@@ -140,3 +140,27 @@ func TestClientDefaultsToTheStandardInstance(t *testing.T) {
 		t.Errorf("a zero Client must target %q, got %v", InstanceName, got)
 	}
 }
+
+// Probing guest state must not print cat's "No such file or directory" into the
+// user's terminal: AdminOutput streams stderr, so the redirect has to happen in
+// the guest. The path must travel as an argument, not inside the command string.
+func TestReadFileSuppressesStderrAndPassesPathSafely(t *testing.T) {
+	f := &fakeRunner{}
+	Client{R: f}.ReadFile(context.Background(), "/run/sandbox/squid-allow.d/10-host-config.conf")
+	if len(f.calls) != 1 {
+		t.Fatalf("expected one call, got %v", f.calls)
+	}
+	argv := f.calls[0]
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "2>/dev/null") {
+		t.Errorf("read must discard stderr in the guest: %v", argv)
+	}
+	if argv[len(argv)-1] != "/run/sandbox/squid-allow.d/10-host-config.conf" {
+		t.Errorf("path must be the last argument, not interpolated: %v", argv)
+	}
+	for _, a := range argv[:len(argv)-1] {
+		if strings.Contains(a, "10-host-config.conf") {
+			t.Errorf("path must not appear inside the command string: %v", argv)
+		}
+	}
+}

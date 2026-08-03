@@ -108,6 +108,25 @@ func (c Client) AdminOutput(ctx context.Context, cmd []string) ([]byte, error) {
 	return c.R.Output(ctx, c.AdminArgs(cmd)...)
 }
 
+// ReadFile returns the contents of a guest file, and empty content when it does
+// not exist or cannot be read.
+//
+// Callers use this to probe guest state — is a fragment installed, what mode did
+// the firewall record — where absence is an ordinary answer. `cat` writes "No
+// such file or directory" to stderr, and AdminOutput streams stderr to the
+// caller's terminal, so probing with it directly printed that line into the
+// user's own command output on every invocation.
+//
+// The path travels as an argument rather than inside the command string, so it
+// cannot be interpreted as shell syntax.
+func (c Client) ReadFile(ctx context.Context, path string) []byte {
+	out, err := c.AdminOutput(ctx, []string{"sh", "-c", `cat -- "$0" 2>/dev/null`, path})
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
 // Status returns the instance status, or "" when the instance does not exist.
 func (c Client) Status(ctx context.Context) (string, error) {
 	out, err := c.R.Output(ctx, "list", c.instance(), "--format", "{{.Status}}")
