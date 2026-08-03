@@ -21,6 +21,15 @@ var newClient = lima.NewClient
 // the host user's so virtiofs-shared files are owned by it.
 const agentUser = "devuser"
 
+// clientFor returns a limactl client bound to the instance this config names.
+// Every command goes through it: the instance is what keeps a throwaway test VM
+// from acting on the one in daily use, so no command may default it silently.
+func clientFor(c config.Config) lima.Client {
+	cl := newClient()
+	cl.Instance = c.Instance
+	return cl
+}
+
 // agentDeps builds the session dependencies from one place, so the exec path
 // and `code-vm allow` cannot drift apart on what identity the guest work runs
 // under. The numeric ids mirror what provisioning gave the guest account.
@@ -121,7 +130,7 @@ func newStartCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return ensureRunning(cmd.Context(), newClient(), c)
+			return ensureRunning(cmd.Context(), clientFor(c), c)
 		},
 	}
 }

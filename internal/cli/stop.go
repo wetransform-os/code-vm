@@ -7,7 +7,11 @@ func newStopCmd() *cobra.Command {
 		Use:   "stop",
 		Short: "Stop the sandbox VM",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return newClient().Stop(cmd.Context())
+			c, _, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			return clientFor(c).Stop(cmd.Context())
 		},
 	}
 }

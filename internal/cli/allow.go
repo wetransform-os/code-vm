@@ -182,7 +182,7 @@ func newAllowCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cl := newClient()
+			cl := clientFor(c)
 			status, err := cl.Status(ctx)
 			if err != nil {
 				return err

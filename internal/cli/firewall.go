@@ -64,7 +64,11 @@ func newFirewallCmd() *cobra.Command {
 		Args:      cobra.MaximumNArgs(1),
 		ValidArgs: firewallModes,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cl := newClient()
+			c, _, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			cl := clientFor(c)
 			out := cmd.OutOrStdout()
 
 			if len(args) == 0 {

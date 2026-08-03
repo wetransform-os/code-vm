@@ -47,7 +47,7 @@ func runDefault(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	cl := newClient()
+	cl := clientFor(c)
 	if err := ensureRunning(ctx, cl, c); err != nil {
 		return err
 	}

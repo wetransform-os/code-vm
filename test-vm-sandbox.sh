@@ -3,13 +3,74 @@
 # test-vm-sandbox.sh — VM sandbox security and functionality suite
 #
 # Requires KVM. Run via: mise run test:vm
+#
+# Runs against a throwaway VM of its own, never the one in daily use. The suite
+# deletes and recreates its instance, flips firewall modes, and calls `code-vm
+# mount`, which rewrites the config it is given — all of which would wreck a
+# working VM's state and leave junk in the real config. Isolation comes from a
+# scratch config file naming a different Lima instance, passed via --config, so
+# there is exactly one thing to get right.
+#
+# CODE_VM_KEEP=1 leaves the test VM running afterwards, for poking at a failure.
 ###############################################################################
 set -uo pipefail
 
-INSTANCE=code-sandbox
 # Absolute path: several assertions cd elsewhere before invoking it.
-CODE_VM="$(pwd)/dist/code-vm"
+CODE_VM_BIN="$(pwd)/dist/code-vm"
 AGENT_USER=devuser
+
+INSTANCE=code-sandbox-test
+TEST_CONFIG_DIR=$(mktemp -d)
+CONFIG_FILE="$TEST_CONFIG_DIR/config.yaml"
+
+# The suite runs code-vm from this repository, and code-vm refuses to work
+# outside a shared directory, so the projects root has to cover the checkout.
+# Test workspaces are created under it and removed as they are used.
+PROJECTS_ROOT=$(dirname "$(pwd)")
+
+# Minimal resources: this VM builds a few small images and runs two alpines, so
+# it does not need the 12GiB the real one gets, and a smaller disk means a
+# recreate costs less.
+cat > "$CONFIG_FILE" << YAML
+instance: $INSTANCE
+projectsRoot: $PROJECTS_ROOT
+cpus: 2
+memory: 6GiB
+disk: 40GiB
+containerProxy: false
+YAML
+
+# Every invocation carries --config, so nothing can reach the real VM or config.
+CODE_VM_ARGS=("$CODE_VM_BIN" --config "$CONFIG_FILE")
+# For embedding in `bash -c` strings, where an array cannot go. Paths here come
+# from pwd and mktemp, so word splitting is safe.
+CODE_VM_STR="$CODE_VM_BIN --config $CONFIG_FILE"
+
+cleanup() {
+    if [ "${CODE_VM_KEEP:-}" = "1" ]; then
+        echo ""
+        echo "[test] CODE_VM_KEEP=1 — leaving $INSTANCE running; config: $CONFIG_FILE"
+        return
+    fi
+    echo ""
+    echo "[test] Removing the throwaway VM ($INSTANCE)..."
+    limactl delete --force "$INSTANCE" > /dev/null 2>&1 || true
+    rm -rf "$TEST_CONFIG_DIR"
+}
+trap cleanup EXIT
+
+# Recorded before anything runs, asserted at the end: the default instance must
+# come out of this untouched. This is the guard for the whole isolation scheme —
+# `code-vm firewall` once built its client without consulting the config and so
+# reconfigured whichever VM was in daily use. Note it cannot tell a leak from you
+# stopping or recreating that VM yourself mid-run; the message says so.
+DEFAULT_INSTANCE=code-sandbox
+default_state() { limactl list "$DEFAULT_INSTANCE" --format '{{.Status}}' 2>/dev/null || true; }
+default_identity() {
+    limactl shell "$DEFAULT_INSTANCE" sudo cat /etc/machine-id 2>/dev/null || echo "(not running)"
+}
+DEFAULT_STATE_BEFORE=$(default_state)
+DEFAULT_ID_BEFORE=$(default_identity)
 
 PASS=0
 FAIL=0
@@ -28,7 +89,7 @@ fail() {
 adm() { limactl shell "$INSTANCE" sudo "$@"; }
 
 # Run a command as the agent user through the real CLI.
-agent() { "$CODE_VM" -- "$@"; }
+agent() { "${CODE_VM_ARGS[@]}" -- "$@"; }
 
 assert_ok() {
     local desc="$1"
@@ -52,7 +113,7 @@ echo "[test] Building code-vm..."
 if mise run build; then pass "code-vm builds"; else fail "code-vm builds"; exit 1; fi
 
 echo "[test] Starting the sandbox VM (first boot provisions; this takes minutes)..."
-if "$CODE_VM" start; then pass "VM starts"; else fail "VM starts"; exit 1; fi
+if "${CODE_VM_ARGS[@]}" start; then pass "VM starts"; else fail "VM starts"; exit 1; fi
 
 # Pre-clean state a previous warm-VM suite run may have left behind, so the
 # egress assertions below see boot-fresh conditions. A clean guest is a no-op.
@@ -82,9 +143,6 @@ echo "── Host filesystem exposure ──────────────
 assert_fails "host \$HOME is not mounted in the guest" \
     adm test -d "$HOME/.ssh"
 
-PROJECTS_ROOT=$(sed -n 's/^projectsRoot: *//p' "${HOME}/.config/code-vm/config.yaml" 2>/dev/null)
-PROJECTS_ROOT=${PROJECTS_ROOT:-$HOME/projects}
-PROJECTS_ROOT=${PROJECTS_ROOT/#\~/$HOME}
 assert_ok "projects root is mounted" adm test -d "$PROJECTS_ROOT"
 
 echo ""
@@ -137,7 +195,7 @@ fi
 
 # Captured first: code-vm exits non-zero here by design, and under pipefail
 # that would fail the pipeline even though grep matches.
-UNCOVERED_OUT=$( (cd /tmp && "$CODE_VM" -- true) 2>&1 )
+UNCOVERED_OUT=$( (cd /tmp && "${CODE_VM_ARGS[@]}" -- true) 2>&1 )
 if echo "$UNCOVERED_OUT" | grep -q "code-vm mount"; then
     pass "running outside a shared directory fails with actionable advice"
 else
@@ -296,7 +354,7 @@ DOMAIN_TEST_DIR="$PROJECTS_ROOT/.code-vm-domains-test"
 mkdir -p "$DOMAIN_TEST_DIR"
 echo ".example.org" > "$DOMAIN_TEST_DIR/.sandbox-domains"
 
-if (cd "$DOMAIN_TEST_DIR" && "$CODE_VM" -- curl -fsS -o /dev/null --max-time 20 https://example.org) 2> /dev/null; then
+if (cd "$DOMAIN_TEST_DIR" && "${CODE_VM_ARGS[@]}" -- curl -fsS -o /dev/null --max-time 20 https://example.org) 2> /dev/null; then
     fail "a workspace .sandbox-domains file must NOT widen the allowlist"
 else
     pass "a workspace .sandbox-domains file does not widen the allowlist"
@@ -314,10 +372,9 @@ echo "── code-vm allow ─────────────────�
 # Runs after the egress assertions above: it widens the allowlist for the rest
 # of the run, and the restart-hygiene section re-checks the tmpfs behaviour.
 
-CONFIG_FILE="$HOME/.config/code-vm/config.yaml"
 cp "$CONFIG_FILE" "$CONFIG_FILE.suite-backup"
 
-ALLOW_OUT=$("$CODE_VM" allow --yes example.org 2>&1)
+ALLOW_OUT=$("${CODE_VM_ARGS[@]}" allow --yes example.org 2>&1)
 if echo "$ALLOW_OUT" | grep -q 'active now'; then
     pass "allow reports the domain as applied live"
 else
@@ -348,13 +405,13 @@ else
     fail "host-config fragment is root-owned and read-only (got $(adm stat -c '%U:%G %a' /run/sandbox/squid-allow.d/10-host-config.conf 2> /dev/null))"
 fi
 
-if "$CODE_VM" allow --yes example.org 2>&1 | grep -q 'already allowed'; then
+if "${CODE_VM_ARGS[@]}" allow --yes example.org 2>&1 | grep -q 'already allowed'; then
     pass "allow is idempotent"
 else
     fail "allow is idempotent"
 fi
 
-if "$CODE_VM" allow --yes 'sub.example.org' 2>&1 | grep -q 'already allowed'; then
+if "${CODE_VM_ARGS[@]}" allow --yes 'sub.example.org' 2>&1 | grep -q 'already allowed'; then
     pass "allow recognises a domain already covered by a parent entry"
 else
     fail "allow recognises a domain already covered by a parent entry"
@@ -362,7 +419,7 @@ fi
 
 # Captured, not piped: code-vm exits non-zero here by design, and under
 # pipefail that would fail the pipeline even though grep matched.
-MALFORMED_OUT=$("$CODE_VM" allow --yes 'not a domain' 2>&1)
+MALFORMED_OUT=$("${CODE_VM_ARGS[@]}" allow --yes 'not a domain' 2>&1)
 if echo "$MALFORMED_OUT" | grep -q 'cannot read a domain'; then
     pass "allow rejects malformed input"
 else
@@ -372,13 +429,13 @@ fi
 # Removing the domain from the config must take effect, or a revoked domain
 # would stay allowed for the VM's lifetime.
 cp "$CONFIG_FILE.suite-backup" "$CONFIG_FILE"
-"$CODE_VM" -- true > /dev/null 2>&1
+"${CODE_VM_ARGS[@]}" -- true > /dev/null 2>&1
 assert_fails "removing the domain from the host config revokes it" \
     agent curl -fsS -o /dev/null --max-time 20 https://example.org
 rm -f "$CONFIG_FILE.suite-backup"
 
 # A mount that exposes the config would let the agent edit its own allowlist.
-if "$CODE_VM" --config "$CONFIG_FILE" status > /dev/null 2>&1; then
+if "${CODE_VM_ARGS[@]}" --config "$CONFIG_FILE" status > /dev/null 2>&1; then
     pass "status works with the config outside every mount"
 else
     fail "status works with the config outside every mount"
@@ -416,7 +473,7 @@ targets:
       - PWNED
 YAML
 
-(cd "$UNTRUSTED_DIR" && "$CODE_VM" -- true > /dev/null 2>&1)
+(cd "$UNTRUSTED_DIR" && "${CODE_VM_ARGS[@]}" -- true > /dev/null 2>&1)
 
 if [ -e "$CANARY" ]; then
     fail "a workspace .sandbox-secrets.yaml must NOT run commands on the host"
@@ -499,37 +556,37 @@ echo ""
 echo "── Lifecycle commands ────────────────────────────────────────────"
 
 assert_ok "status reports the running instance" \
-    bash -c "\"$CODE_VM\" status | grep -q 'code-sandbox (Running)'"
+    bash -c "$CODE_VM_STR status | grep -q \"$INSTANCE (Running)\""
 assert_ok "status shows the firewall verification" \
-    bash -c "\"$CODE_VM\" status | grep -q 'OUTPUT_POLICY=DROP'"
-assert_ok "proxy-log denied mode runs" "$CODE_VM" proxy-log denied
-assert_fails "proxy-log rejects an unknown mode" "$CODE_VM" proxy-log everything
+    bash -c "$CODE_VM_STR status | grep -q 'OUTPUT_POLICY=DROP'"
+assert_ok "proxy-log denied mode runs" "${CODE_VM_ARGS[@]}" proxy-log denied
+assert_fails "proxy-log rejects an unknown mode" "${CODE_VM_ARGS[@]}" proxy-log everything
 
-# code-vm mount rewrites ~/.config/code-vm/config.yaml, so the temp mount is
-# removed from the config again below. The VM keeps the stale mount until its
-# next restart, which is harmless.
+# mount rewrites the config it is given — the scratch one, which is discarded
+# with the VM, so an interrupted run cannot leave a stale mount in the real
+# config. Removed below anyway so the later assertions see a clean list.
 # Output is captured, not piped into grep -q: an early-exiting grep closes
 # the pipe and SIGPIPEs limactl mid-restart, and pipefail would fail the
 # pipeline on code-vm's own exit status.
 MOUNT_TEST_DIR=$(mktemp -d)
-MOUNT_OUT=$("$CODE_VM" mount "$MOUNT_TEST_DIR" 2>&1)
+MOUNT_OUT=$("${CODE_VM_ARGS[@]}" mount "$MOUNT_TEST_DIR" 2>&1)
 if echo "$MOUNT_OUT" | grep -q "Added"; then
     pass "mount adds a new shared directory"
 else
     fail "mount adds a new shared directory"
 fi
-if (cd "$MOUNT_TEST_DIR" && "$CODE_VM" -- pwd | grep -qx "$MOUNT_TEST_DIR"); then
+if (cd "$MOUNT_TEST_DIR" && "${CODE_VM_ARGS[@]}" -- pwd | grep -qx "$MOUNT_TEST_DIR"); then
     pass "newly mounted directory is usable as a workspace"
 else
     fail "newly mounted directory is usable as a workspace"
 fi
-MOUNT_OUT=$("$CODE_VM" mount "$MOUNT_TEST_DIR" 2>&1)
+MOUNT_OUT=$("${CODE_VM_ARGS[@]}" mount "$MOUNT_TEST_DIR" 2>&1)
 if echo "$MOUNT_OUT" | grep -q "already shared"; then
     pass "mount is idempotent"
 else
     fail "mount is idempotent"
 fi
-yq -i 'del(.extraMounts[] | select(. == "'"$MOUNT_TEST_DIR"'"))' "$HOME/.config/code-vm/config.yaml"
+yq -i 'del(.extraMounts[] | select(. == "'"$MOUNT_TEST_DIR"'"))' "$CONFIG_FILE"
 rmdir "$MOUNT_TEST_DIR"
 
 echo ""
@@ -546,23 +603,23 @@ fi
 echo ""
 echo "── Firewall modes ────────────────────────────────────────────────"
 
-if "$CODE_VM" firewall | grep -qx allowlist; then
+if "${CODE_VM_ARGS[@]}" firewall | grep -qx allowlist; then
     pass "default mode is allowlist"
 else
-    fail "default mode is allowlist (got $("$CODE_VM" firewall))"
+    fail "default mode is allowlist (got $("${CODE_VM_ARGS[@]}" firewall))"
 fi
 
 assert_fails "mode=open is rejected without confirmation flags" \
-    bash -c "echo n | \"$CODE_VM\" firewall open"
+    bash -c "echo n | $CODE_VM_STR firewall open"
 
-"$CODE_VM" firewall audit > /dev/null
+"${CODE_VM_ARGS[@]}" firewall audit > /dev/null
 assert_ok "audit mode reaches a non-allowlisted domain through the proxy" \
     agent curl -fsS -o /dev/null --max-time 20 https://example.org
 assert_fails "audit mode still forces traffic through the proxy" \
     agent env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
     curl -fsS -o /dev/null --max-time 20 https://example.org
 
-"$CODE_VM" firewall open --yes > /dev/null
+"${CODE_VM_ARGS[@]}" firewall open --yes > /dev/null
 assert_ok "open mode allows direct egress without the proxy" \
     agent env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
     curl -fsS -o /dev/null --max-time 20 https://example.org
@@ -577,7 +634,7 @@ assert_fails "the agent cannot change the firewall mode" \
 assert_fails "the agent cannot write the mode file" \
     agent bash -c 'echo open > /run/sandbox/firewall-mode'
 
-"$CODE_VM" firewall allowlist > /dev/null
+"${CODE_VM_ARGS[@]}" firewall allowlist > /dev/null
 assert_fails "returning to allowlist blocks the domain again" \
     agent curl -fsS -o /dev/null --max-time 20 https://example.org
 
@@ -585,8 +642,8 @@ assert_fails "returning to allowlist blocks the domain again" \
 # reaching for `firewall audit` to find out what was denied would otherwise
 # erase the evidence.
 LOG_LINES_BEFORE=$(adm sh -c 'wc -l < /var/log/squid/access.log' 2> /dev/null || echo 0)
-"$CODE_VM" firewall audit > /dev/null
-"$CODE_VM" firewall allowlist > /dev/null
+"${CODE_VM_ARGS[@]}" firewall audit > /dev/null
+"${CODE_VM_ARGS[@]}" firewall allowlist > /dev/null
 LOG_LINES_AFTER=$(adm sh -c 'wc -l < /var/log/squid/access.log' 2> /dev/null || echo 0)
 if [ "$LOG_LINES_BEFORE" -gt 0 ] && [ "$LOG_LINES_AFTER" -ge "$LOG_LINES_BEFORE" ]; then
     pass "a firewall mode switch preserves the proxy audit log"
@@ -600,11 +657,11 @@ echo "── Restart hygiene ─────────────────
 # restart must revert to allowlist and leave the guest holding only what the
 # host config puts back.
 
-"$CODE_VM" firewall audit > /dev/null
-"$CODE_VM" stop > /dev/null 2>&1
-"$CODE_VM" start > /dev/null 2>&1
+"${CODE_VM_ARGS[@]}" firewall audit > /dev/null
+"${CODE_VM_ARGS[@]}" stop > /dev/null 2>&1
+"${CODE_VM_ARGS[@]}" start > /dev/null 2>&1
 
-if "$CODE_VM" firewall | grep -qx allowlist; then
+if "${CODE_VM_ARGS[@]}" firewall | grep -qx allowlist; then
     pass "firewall mode reverts to allowlist on VM restart"
 else
     fail "firewall mode reverts to allowlist on VM restart"
@@ -626,9 +683,9 @@ assert_ok "settings stay locked after restart" \
 # tmpfs-only mechanism this replaced. init-firewall.sh writes the fragment at
 # boot from provision.env, so the domain is live before any invocation.
 cp "$CONFIG_FILE" "$CONFIG_FILE.restart-backup"
-"$CODE_VM" allow --yes example.org > /dev/null 2>&1
-"$CODE_VM" stop > /dev/null 2>&1
-"$CODE_VM" start > /dev/null 2>&1
+"${CODE_VM_ARGS[@]}" allow --yes example.org > /dev/null 2>&1
+"${CODE_VM_ARGS[@]}" stop > /dev/null 2>&1
+"${CODE_VM_ARGS[@]}" start > /dev/null 2>&1
 
 if adm test -f /run/sandbox/squid-allow.d/10-host-config.conf; then
     pass "host-config fragment is rebuilt at boot"
@@ -640,6 +697,21 @@ assert_ok "a host-config domain is allowed again after restart" \
     agent curl -fsS -o /dev/null --max-time 20 https://example.org
 
 mv "$CONFIG_FILE.restart-backup" "$CONFIG_FILE"
+
+echo ""
+echo "── Isolation from the VM in daily use ────────────────────────────"
+
+if [ "$(default_state)" = "$DEFAULT_STATE_BEFORE" ]; then
+    pass "the default instance's state is unchanged ($DEFAULT_STATE_BEFORE)"
+else
+    fail "the default instance's state changed: $DEFAULT_STATE_BEFORE -> $(default_state) (a leak from the suite, or you touched it during the run)"
+fi
+
+if [ "$(default_identity)" = "$DEFAULT_ID_BEFORE" ]; then
+    pass "the default instance was not recreated"
+else
+    fail "the default instance was recreated (machine-id $DEFAULT_ID_BEFORE -> $(default_identity); a leak from the suite, or you recreated it during the run)"
+fi
 
 echo ""
 echo "================================================================"

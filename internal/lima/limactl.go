@@ -55,9 +55,20 @@ func (e ExecRunner) Output(ctx context.Context, args ...string) ([]byte, error) 
 	return out.Bytes(), nil
 }
 
-// Client drives the sandbox Lima instance.
+// Client drives one Lima instance.
 type Client struct {
 	R Runner
+	// Instance names the Lima instance to act on. Empty means InstanceName, so
+	// a zero Client still targets the default and existing callers keep working.
+	Instance string
+}
+
+// instance resolves the instance this Client acts on.
+func (c Client) instance() string {
+	if c.Instance != "" {
+		return c.Instance
+	}
+	return InstanceName
 }
 
 // NewClient returns a Client wired to the real limactl and this process's
@@ -72,13 +83,13 @@ func NewClient() Client {
 // it would cd as limaadmin before sudo, which fails for 0700 directories the
 // agent owns (observed with mktemp -d workspaces).
 func (c Client) AgentArgs(workdir string, cmd []string) []string {
-	args := []string{"shell", InstanceName, "sudo", "/usr/local/bin/sandbox-exec", "--workdir", workdir}
+	args := []string{"shell", c.instance(), "sudo", "/usr/local/bin/sandbox-exec", "--workdir", workdir}
 	return append(args, cmd...)
 }
 
 // AdminArgs builds the argv that runs cmd as root via limaadmin's sudo.
 func (c Client) AdminArgs(cmd []string) []string {
-	args := []string{"shell", InstanceName, "sudo"}
+	args := []string{"shell", c.instance(), "sudo"}
 	return append(args, cmd...)
 }
 
@@ -99,7 +110,7 @@ func (c Client) AdminOutput(ctx context.Context, cmd []string) ([]byte, error) {
 
 // Status returns the instance status, or "" when the instance does not exist.
 func (c Client) Status(ctx context.Context) (string, error) {
-	out, err := c.R.Output(ctx, "list", InstanceName, "--format", "{{.Status}}")
+	out, err := c.R.Output(ctx, "list", c.instance(), "--format", "{{.Status}}")
 	if err != nil {
 		// A missing instance is not an error condition for callers.
 		return "", nil
@@ -109,19 +120,19 @@ func (c Client) Status(ctx context.Context) (string, error) {
 
 // Start creates or starts the instance from the rendered template.
 func (c Client) Start(ctx context.Context, tplPath string) error {
-	return c.R.Run(ctx, "start", "--tty=false", "--name", InstanceName, tplPath)
+	return c.R.Run(ctx, "start", "--tty=false", "--name", c.instance(), tplPath)
 }
 
 // StartExisting boots an already-created instance from its stored config.
 // `limactl start --name <name> <file>` refuses to run when the instance
 // exists, so updates go through ResolveConfigInto first.
 func (c Client) StartExisting(ctx context.Context) error {
-	return c.R.Run(ctx, "start", "--tty=false", InstanceName)
+	return c.R.Run(ctx, "start", "--tty=false", c.instance())
 }
 
 // InstanceDir returns the instance's data directory on the host.
 func (c Client) InstanceDir(ctx context.Context) (string, error) {
-	out, err := c.R.Output(ctx, "list", InstanceName, "--format", "{{.Dir}}")
+	out, err := c.R.Output(ctx, "list", c.instance(), "--format", "{{.Dir}}")
 	if err != nil {
 		return "", err
 	}
@@ -138,17 +149,17 @@ func (c Client) ResolveConfigInto(ctx context.Context, src, dst string) error {
 
 // Stop shuts the instance down.
 func (c Client) Stop(ctx context.Context) error {
-	return c.R.Run(ctx, "stop", InstanceName)
+	return c.R.Run(ctx, "stop", c.instance())
 }
 
 // Delete removes the instance and its disk.
 func (c Client) Delete(ctx context.Context) error {
-	return c.R.Run(ctx, "delete", "--force", InstanceName)
+	return c.R.Run(ctx, "delete", "--force", c.instance())
 }
 
 // Copy copies a host file into the guest.
 func (c Client) Copy(ctx context.Context, localPath, guestPath string) error {
-	return c.R.Run(ctx, "copy", localPath, InstanceName+":"+guestPath)
+	return c.R.Run(ctx, "copy", localPath, c.instance()+":"+guestPath)
 }
 
 // Version returns limactl's reported version string.

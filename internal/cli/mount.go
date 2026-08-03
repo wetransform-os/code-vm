@@ -58,7 +58,7 @@ func newMountCmd() *cobra.Command {
 			}
 			fmt.Fprintf(out, "Added %s to %s.\n", args[0], path)
 
-			cl := newClient()
+			cl := clientFor(updated)
 			status, err := cl.Status(cmd.Context())
 			if err != nil {
 				return err

@@ -20,9 +20,21 @@ var sizeRe = regexp.MustCompile(`^[0-9]+(B|KiB|MiB|GiB|TiB)$`)
 // schemes, ports, paths — must be rejected here rather than reaching squid.conf.
 var domainRe = regexp.MustCompile(`^\.?[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$`)
 
+// DefaultInstance is the Lima instance code-vm manages unless the config names
+// another one.
+const DefaultInstance = "code-sandbox"
+
+// instanceRe matches names Lima accepts, and that are safe to interpolate into
+// the generated YAML and into shell commands in the readiness probe.
+var instanceRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}$`)
+
 // Config is the code-vm host configuration. It is the entire knob surface:
 // the Lima instance is rendered from it, so the VM shape stays reproducible.
 type Config struct {
+	// Instance is the Lima instance this config drives. Selecting it here is
+	// what lets a throwaway VM exist alongside the one in daily use: the test
+	// suite points --config at its own file and never touches the real VM.
+	Instance       string   `yaml:"instance"`
 	ProjectsRoot   string   `yaml:"projectsRoot"`
 	ExtraMounts    []string `yaml:"extraMounts,omitempty"`
 	CPUs           int      `yaml:"cpus"`
@@ -36,6 +48,7 @@ type Config struct {
 // image layers accumulate inside the guest.
 func Default() Config {
 	return Config{
+		Instance:       DefaultInstance,
 		ProjectsRoot:   "~/projects",
 		CPUs:           4,
 		Memory:         "12GiB",
@@ -59,6 +72,11 @@ func Load(path string) (Config, error) {
 		if err := yaml.Unmarshal(data, &c); err != nil {
 			return Config{}, fmt.Errorf("parse %s: %w", path, err)
 		}
+	}
+	// An explicit empty instance means "the default", so a hand-written config
+	// that omits the key keeps working.
+	if c.Instance == "" {
+		c.Instance = DefaultInstance
 	}
 	if c.ProjectsRoot, err = ExpandPath(c.ProjectsRoot); err != nil {
 		return Config{}, fmt.Errorf("projectsRoot: %w", err)
@@ -88,6 +106,9 @@ func (c Config) Save(path string) error {
 
 // Validate checks the config is usable for rendering a Lima instance.
 func (c Config) Validate() error {
+	if !instanceRe.MatchString(c.Instance) {
+		return fmt.Errorf("instance must be a Lima instance name like %q, got %q", DefaultInstance, c.Instance)
+	}
 	if c.ProjectsRoot == "" {
 		return errors.New("projectsRoot must be set")
 	}

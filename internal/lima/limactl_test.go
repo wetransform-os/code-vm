@@ -99,3 +99,44 @@ func TestCopyUsesInstancePrefixedDestination(t *testing.T) {
 		t.Errorf("argv = %v, want %v", f.calls[0], want)
 	}
 }
+
+// A throwaway test VM must never act on the instance in daily use, so every
+// argv builder has to honour Client.Instance rather than the package default.
+func TestClientTargetsItsOwnInstance(t *testing.T) {
+	c := Client{R: &fakeRunner{}, Instance: "code-sandbox-test"}
+	argvs := [][]string{
+		c.AgentArgs("/w", []string{"true"}),
+		c.AdminArgs([]string{"true"}),
+	}
+	for _, argv := range argvs {
+		joined := strings.Join(argv, " ")
+		if !strings.Contains(joined, "code-sandbox-test") {
+			t.Errorf("argv does not target the configured instance: %v", argv)
+		}
+		if strings.Contains(joined, InstanceName+" ") {
+			t.Errorf("argv leaked the default instance %q: %v", InstanceName, argv)
+		}
+	}
+
+	f := &fakeRunner{}
+	c = Client{R: f, Instance: "code-sandbox-test"}
+	_ = c.Stop(context.Background())
+	_ = c.Delete(context.Background())
+	_, _ = c.Status(context.Background())
+	_ = c.Copy(context.Background(), "/l", "/g")
+	for _, call := range f.calls {
+		joined := strings.Join(call, " ")
+		if !strings.Contains(joined, "code-sandbox-test") {
+			t.Errorf("lifecycle call did not target the configured instance: %v", call)
+		}
+	}
+}
+
+// An unset Instance keeps targeting the default, so a zero Client and older
+// callers behave as before.
+func TestClientDefaultsToTheStandardInstance(t *testing.T) {
+	got := Client{R: &fakeRunner{}}.AdminArgs([]string{"true"})
+	if !strings.Contains(strings.Join(got, " "), InstanceName) {
+		t.Errorf("a zero Client must target %q, got %v", InstanceName, got)
+	}
+}

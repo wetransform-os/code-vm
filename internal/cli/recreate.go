@@ -32,7 +32,7 @@ func newRecreateCmd() *cobra.Command {
 					return fmt.Errorf("aborted")
 				}
 			}
-			cl := newClient()
+			cl := clientFor(c)
 			if err := cl.Delete(cmd.Context()); err != nil {
 				return err
 			}

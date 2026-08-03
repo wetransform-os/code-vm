@@ -31,7 +31,11 @@ func newProxyLogCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return newClient().Admin(cmd.Context(), guestCmd)
+			c, _, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			return clientFor(c).Admin(cmd.Context(), guestCmd)
 		},
 	}
 }

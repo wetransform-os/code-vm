@@ -4,8 +4,6 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
-
-	"github.com/wetransform/code-vm/internal/lima"
 )
 
 func newStatusCmd() *cobra.Command {
@@ -18,7 +16,7 @@ func newStatusCmd() *cobra.Command {
 				return err
 			}
 			out := cmd.OutOrStdout()
-			cl := newClient()
+			cl := clientFor(c)
 			status, err := cl.Status(cmd.Context())
 			if err != nil {
 				return err
@@ -26,7 +24,7 @@ func newStatusCmd() *cobra.Command {
 			if status == "" {
 				status = "not created"
 			}
-			fmt.Fprintf(out, "instance:      %s (%s)\n", lima.InstanceName, status)
+			fmt.Fprintf(out, "instance:      %s (%s)\n", c.Instance, status)
 			fmt.Fprintf(out, "config:        %s\n", path)
 			fmt.Fprintf(out, "cpus/memory:   %d / %s\n", c.CPUs, c.Memory)
 			fmt.Fprintln(out, "shared paths:")

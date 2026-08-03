@@ -94,4 +94,4 @@ probes:
   hint: |
     The sandbox boot sequence did not finish, so the egress firewall is not
     verified and the VM is deliberately not reported ready. Inspect it with:
-      limactl shell code-sandbox sudo journalctl -u sandbox-boot.service
+      limactl shell {{.Config.Instance}} sudo journalctl -u sandbox-boot.service
