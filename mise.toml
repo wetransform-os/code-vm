@@ -16,7 +16,7 @@ description = "Run Go unit tests"
 run = "go test ./..."
 
 [tasks."test:vm"]
-description = "Run the VM integration suite (requires KVM)"
+description = "Run the VM integration suite (requires KVM on Linux, HVF on macOS)"
 run = "bash test-vm-sandbox.sh"
 
 [tasks.lint]

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -126,7 +127,7 @@ func TestRenderInstanceFileIsPrivateAndComplete(t *testing.T) {
 }
 
 func TestRenderParamsUsesHostIdentity(t *testing.T) {
-	p, err := renderParams()
+	p, err := renderParams(testCfg(t))
 	if err != nil {
 		t.Fatalf("renderParams: %v", err)
 	}
@@ -138,5 +139,35 @@ func TestRenderParamsUsesHostIdentity(t *testing.T) {
 	}
 	if len(p.DataFiles) == 0 {
 		t.Error("DataFiles must be populated from the embedded assets")
+	}
+}
+
+// The config leaves the driver unset by default, so the accelerated one for
+// this host has to be filled in before rendering — on Linux QEMU, which KVM
+// accelerates, and on macOS vz, which runs on Hypervisor.framework.
+func TestRenderParamsResolvesTheHostHypervisor(t *testing.T) {
+	want, err := config.ResolveVMType("", runtime.GOOS)
+	if err != nil {
+		t.Skipf("code-vm does not support %s hosts: %v", runtime.GOOS, err)
+	}
+	p, err := renderParams(testCfg(t))
+	if err != nil {
+		t.Fatalf("renderParams: %v", err)
+	}
+	if p.VMType != want {
+		t.Errorf("VMType = %q, want %q on %s", p.VMType, want, runtime.GOOS)
+	}
+}
+
+// Asking for the driver the other platform uses must fail before a VM is
+// created, rather than booting one whose mounts silently rewrite ownership.
+func TestRenderParamsRejectsTheOtherHostsHypervisor(t *testing.T) {
+	c := testCfg(t)
+	c.VMType = config.VMTypeVZ
+	if runtime.GOOS == "darwin" {
+		c.VMType = config.VMTypeQEMU
+	}
+	if _, err := renderParams(c); err == nil {
+		t.Errorf("renderParams with vmType %q on %s = nil error, want a failure", c.VMType, runtime.GOOS)
 	}
 }

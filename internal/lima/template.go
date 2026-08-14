@@ -18,6 +18,10 @@ type RenderParams struct {
 	AgentUser string
 	AgentUID  int
 	AgentGID  int
+	// VMType is the resolved Lima driver, not the raw config value: which
+	// hypervisor is usable depends on the host OS, which is host-derived and
+	// therefore does not belong in Render. See config.ResolveVMType.
+	VMType    string
 	DataFiles []guest.DataFile
 }
 
@@ -63,6 +67,14 @@ func Render(c config.Config, p RenderParams) (string, error) {
 	if err := c.Validate(); err != nil {
 		return "", fmt.Errorf("invalid config: %w", err)
 	}
+	// An empty driver would render `vmType: ""` and hand Lima's own default
+	// back the choice the mount type depends on, so callers must resolve it.
+	if p.VMType == "" {
+		return "", fmt.Errorf("unresolved vmType %q: resolve it with config.ResolveVMType before rendering", p.VMType)
+	}
+	if err := config.ValidateVMType(p.VMType); err != nil {
+		return "", fmt.Errorf("invalid vmType %q: %w", p.VMType, err)
+	}
 	raw, err := guest.LimaTemplate()
 	if err != nil {
 		return "", err
@@ -80,8 +92,9 @@ func Render(c config.Config, p RenderParams) (string, error) {
 		AgentUser string
 		AgentUID  int
 		AgentGID  int
+		VMType    string
 		DataFiles []guest.DataFile
-	}{c, p.AgentUser, p.AgentUID, p.AgentGID, files}
+	}{c, p.AgentUser, p.AgentUID, p.AgentGID, p.VMType, files}
 
 	var out strings.Builder
 	if err := tpl.Execute(&out, data); err != nil {

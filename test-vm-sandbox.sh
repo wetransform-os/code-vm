@@ -2,7 +2,7 @@
 ###############################################################################
 # test-vm-sandbox.sh — VM sandbox security and functionality suite
 #
-# Requires KVM. Run via: mise run test:vm
+# Requires KVM on Linux, HVF on macOS. Run via: mise run test:vm
 #
 # Runs against a throwaway VM of its own, never the one in daily use. The suite
 # deletes and recreates its instance, flips firewall modes, and calls `code-vm
@@ -87,6 +87,9 @@ fail() {
 
 # Run a command as root in the guest.
 adm() { limactl shell "$INSTANCE" sudo "$@"; }
+
+# `stat -c` is GNU-only, `stat -f` for macOS.
+host_uid_of() { stat -c '%u' "$1" 2> /dev/null || stat -f '%u' "$1"; }
 
 # Run a command as the agent user through the real CLI.
 agent() { "${CODE_VM_ARGS[@]}" -- "$@"; }
@@ -532,7 +535,7 @@ else
 fi
 
 (cd "$OWN_DIR" && agent bash -c 'echo guest > from-guest')
-if [ -f "$OWN_DIR/from-guest" ] && [ "$(stat -c '%u' "$OWN_DIR/from-guest")" = "$(id -u)" ]; then
+if [ -f "$OWN_DIR/from-guest" ] && [ "$(host_uid_of "$OWN_DIR/from-guest")" = "$(id -u)" ]; then
     pass "guest-created file is owned by the host user on the host"
 else
     fail "guest-created file is owned by the host user on the host"

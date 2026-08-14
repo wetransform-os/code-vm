@@ -24,13 +24,16 @@ A VM has its own kernel, so it runs a real Docker daemon instead.
 
 ## Prerequisites
 
-- Linux x86_64 with KVM (`/dev/kvm` readable and writable by your user)
-- [Lima](https://lima-vm.io) 2.2.0 or newer, and `virtiofsd`
+- [Lima](https://lima-vm.io) 2.2.0 or newer
 - [mise](https://mise.jdx.dev) for the build toolchain
+- Virtualization:
+  * Linux: x86_64 with KVM (`/dev/kvm` readable and writable by your user) and `virtiofsd`
+  * macOS: HVF on macOS 13.5 or newer
+  * Windows: Unsupported
 
-Run `code-vm doctor` to check all of the above.
 
-macOS is expected to work (Lima supports `vz`) but is not tested.
+Run `code-vm doctor` to check the prerequisites.
+
 
 ## Quick start
 
@@ -79,6 +82,7 @@ instance: code-sandbox        # the Lima instance this config drives
 projectsRoot: ~/projects      # the one directory always shared
 extraMounts:                  # added by `code-vm mount`
   - ~/work/other-repo
+vmType:                       # hypervisor; empty picks the host's — see below
 cpus: 4
 memory: 12GiB
 disk: 100GiB
@@ -91,6 +95,16 @@ Nothing is read from the project directory. `code-vm` deliberately trusts no
 file inside a workspace: the workspace is mounted writable and is exactly what
 the agent edits, so anything there is agent-authored input. The host config is
 the whole knob surface.
+
+### `vmType`
+
+The Lima hypervisor driver. Leave it unset — the default — and `code-vm` picks
+the accelerated one for the host:
+
+| Host | `vmType` | Accelerated by | virtiofs from |
+|---|---|---|---|
+| Linux | `qemu` | KVM | the `virtiofsd` package |
+| macOS 13.5+ | `vz` | Hypervisor.framework (HVF) | Virtualization.framework |
 
 ### Credentials
 
@@ -209,7 +223,7 @@ These are consequences of the design, not oversights:
 ```bash
 mise run test:unit   # Go tests: config, template rendering, argv construction
 mise run lint        # golangci-lint + shellcheck
-mise run test:vm     # full VM suite; requires KVM
+mise run test:vm     # full VM suite; requires KVM on Linux, HVF on macOS
 ```
 
 `mise run test:vm` builds its own throwaway VM (`code-sandbox-test`, minimal
