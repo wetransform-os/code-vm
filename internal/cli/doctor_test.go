@@ -37,6 +37,75 @@ func TestParseLimaVersion(t *testing.T) {
 	}
 }
 
+// macOS reports two-component versions ("13.5") as often as three, so the
+// comparison must not require all three to be present.
+func TestAtLeastVersionPadsMissingComponents(t *testing.T) {
+	tests := []struct {
+		in      string
+		wantErr bool
+	}{
+		{"13.5", false},
+		{"13.5.2", false},
+		{"14", false},
+		{"26.5.2", false},
+		{"13.4", true},
+		{"13", true},
+		{"12.9.9", true},
+		{"", true},
+		{"sequoia", true},
+		{"1.2.3.4", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.in, func(t *testing.T) {
+			if err := atLeastVersion(tc.in, minMacOS); (err != nil) != tc.wantErr {
+				t.Errorf("atLeastVersion(%q, %v) error = %v, wantErr %v", tc.in, minMacOS, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// The virtualisation prerequisites are not the same list on both platforms:
+// macOS has no /dev/kvm and needs no virtiofsd package, because
+// Virtualization.framework provides both the hypervisor and the virtio-fs
+// device. Reporting the Linux list on a Mac would fail every run for reasons
+// the user cannot act on.
+func TestHypervisorChecksAreHostAppropriate(t *testing.T) {
+	tests := []struct {
+		goos    string
+		want    []string
+		notWant []string
+	}{
+		{
+			goos:    "darwin",
+			want:    []string{"macOS supports Virtualization.framework", "hardware virtualisation (HVF) available"},
+			notWant: []string{"KVM accessible", "virtiofsd installed"},
+		},
+		{
+			goos:    "linux",
+			want:    []string{"virtiofsd installed", "KVM accessible"},
+			notWant: []string{"hardware virtualisation (HVF) available"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.goos, func(t *testing.T) {
+			names := map[string]bool{}
+			for _, c := range hypervisorChecks(tc.goos) {
+				names[c.name] = true
+			}
+			for _, w := range tc.want {
+				if !names[w] {
+					t.Errorf("hypervisorChecks(%q) missing check %q, got %v", tc.goos, w, names)
+				}
+			}
+			for _, w := range tc.notWant {
+				if names[w] {
+					t.Errorf("hypervisorChecks(%q) must not run check %q", tc.goos, w)
+				}
+			}
+		})
+	}
+}
+
 func TestAtLeastLimaVersion(t *testing.T) {
 	tests := []struct {
 		in      string

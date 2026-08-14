@@ -34,9 +34,13 @@ type Config struct {
 	// Instance is the Lima instance this config drives. Selecting it here is
 	// what lets a throwaway VM exist alongside the one in daily use: the test
 	// suite points --config at its own file and never touches the real VM.
-	Instance       string   `yaml:"instance"`
-	ProjectsRoot   string   `yaml:"projectsRoot"`
-	ExtraMounts    []string `yaml:"extraMounts,omitempty"`
+	Instance     string   `yaml:"instance"`
+	ProjectsRoot string   `yaml:"projectsRoot"`
+	ExtraMounts  []string `yaml:"extraMounts,omitempty"`
+	// VMType selects the Lima hypervisor driver. Empty (default) means
+	// the host's accelerated one, so nothing has to be set on either platform;
+	// see ResolveVMType.
+	VMType         string   `yaml:"vmType,omitempty"`
 	CPUs           int      `yaml:"cpus"`
 	Memory         string   `yaml:"memory"`
 	Disk           string   `yaml:"disk"`
@@ -119,6 +123,9 @@ func (c Config) Validate() error {
 		if !filepath.IsAbs(m) {
 			return fmt.Errorf("extraMounts[%d] must be an absolute path, got %q", i, m)
 		}
+	}
+	if err := ValidateVMType(c.VMType); err != nil {
+		return err
 	}
 	if c.CPUs < 1 {
 		return fmt.Errorf("cpus must be at least 1, got %d", c.CPUs)

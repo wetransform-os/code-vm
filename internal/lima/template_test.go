@@ -19,8 +19,13 @@ func testConfig() config.Config {
 	return c
 }
 
+// The driver is pinned rather than taken from the host, so rendering
+// is identical on a Linux and a macOS checkout.
 func testParams(files []guest.DataFile) RenderParams {
-	return RenderParams{AgentUser: "devuser", AgentUID: 1000, AgentGID: 1000, DataFiles: files}
+	return RenderParams{
+		AgentUser: "devuser", AgentUID: 1000, AgentGID: 1000,
+		VMType: config.VMTypeQEMU, DataFiles: files,
+	}
 }
 
 func TestRenderSecurityInvariants(t *testing.T) {
@@ -49,6 +54,41 @@ func TestRenderSecurityInvariants(t *testing.T) {
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered template missing %q", want)
+		}
+	}
+}
+
+// Both supported drivers must render, because the same template serves a Linux
+// host on QEMU/KVM and a macOS host on vz/HVF. Only virtiofs pairs with either,
+// so the mount type must not vary with the driver.
+func TestRenderPinsTheResolvedVMType(t *testing.T) {
+	for _, vmType := range []string{config.VMTypeQEMU, config.VMTypeVZ} {
+		t.Run(vmType, func(t *testing.T) {
+			p := testParams(nil)
+			p.VMType = vmType
+			out, err := Render(testConfig(), p)
+			if err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+			if want := `vmType: "` + vmType + `"`; !strings.Contains(out, want) {
+				t.Errorf("rendered template missing %q", want)
+			}
+			if !strings.Contains(out, "mountType: virtiofs") {
+				t.Error("virtiofs is what preserves host UIDs and is available under both drivers; it must not vary")
+			}
+		})
+	}
+}
+
+// Leaving the driver to Lima's default would silently pick one the mount type
+// may not pair with, so an unresolved value is a render-time error rather than
+// an empty field in the instance file.
+func TestRenderRejectsUnresolvedVMType(t *testing.T) {
+	for _, vmType := range []string{"", "hvf", "vmware"} {
+		p := testParams(nil)
+		p.VMType = vmType
+		if _, err := Render(testConfig(), p); err == nil {
+			t.Errorf("Render with VMType %q = nil error, want a failure", vmType)
 		}
 	}
 }

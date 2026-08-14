@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/spf13/cobra"
 
@@ -44,8 +45,14 @@ func agentDeps(cl lima.Client, c config.Config) session.Deps {
 }
 
 // renderParams gathers the host-derived values the Lima template needs.
-func renderParams() (lima.RenderParams, error) {
+// The config may leave the hypervisor and which driver is accelerated unset
+// (QEMU/KVM or vz/HVF) as it is a property of the host, not the config.
+func renderParams(c config.Config) (lima.RenderParams, error) {
 	files, err := guest.DataFiles()
+	if err != nil {
+		return lima.RenderParams{}, err
+	}
+	vmType, err := config.ResolveVMType(c.VMType, runtime.GOOS)
 	if err != nil {
 		return lima.RenderParams{}, err
 	}
@@ -53,6 +60,7 @@ func renderParams() (lima.RenderParams, error) {
 		AgentUser: agentUser,
 		AgentUID:  os.Getuid(),
 		AgentGID:  os.Getgid(),
+		VMType:    vmType,
 		DataFiles: files,
 	}, nil
 }
@@ -60,7 +68,7 @@ func renderParams() (lima.RenderParams, error) {
 // renderInstanceFile writes the rendered Lima instance to a temp file and
 // returns its path. The caller is responsible for removing it.
 func renderInstanceFile(c config.Config) (string, error) {
-	p, err := renderParams()
+	p, err := renderParams(c)
 	if err != nil {
 		return "", err
 	}

@@ -8,6 +8,13 @@ minimumLimaVersion: 2.2.0
 base:
 - template:_images/ubuntu-lts
 
+# The hypervisor. "qemu" is accelerated by KVM on Linux; "vz" is Apple's
+# Virtualization.framework, which runs on Hypervisor.framework (HVF) and is the
+# accelerated path on macOS. Pinned by code-vm rather than left to Lima's own
+# default, because the mount type below depends on it: virtiofs with QEMU on Linux
+# and with vz on macOS.
+vmType: "qemu"
+
 cpus: 4
 memory: "12GiB"
 disk: "100GiB"
@@ -39,7 +46,9 @@ mounts:
   writable: true
 # virtiofs preserves host UIDs, which is what makes the agent's UID match the
 # host user's and keeps workspace files host-owned. An SSH-based reverse mount
-# would map ownership to the SSH user and break that.
+# would map ownership to the SSH user and break that. Provided by virtiofsd
+# under QEMU on Linux and by Virtualization.framework under vz on macOS, which
+# is why the driver above is not a free choice.
 mountType: virtiofs
 
 # No automatic port forwarding: nothing in the guest needs to be reachable
