@@ -1630,9 +1630,12 @@ func makeGitProfile(t *testing.T) string {
 
 func withScratchConfig(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
+	dir := t.TempDir() // config dir; profiles live under dir/profiles
+	// projectsRoot must be a separate tree: loadConfig refuses any mount
+	// overlapping the profiles directory (MountsExcludeTree).
+	projects := t.TempDir()
 	cfg := filepath.Join(dir, "config.yaml")
-	os.WriteFile(cfg, []byte("instance: code-sandbox-clitest\nprojectsRoot: "+dir+"\ncpus: 1\nmemory: 1GiB\ndisk: 10GiB\n"), 0o600)
+	os.WriteFile(cfg, []byte("instance: code-sandbox-clitest\nprojectsRoot: "+projects+"\ncpus: 1\nmemory: 1GiB\ndisk: 10GiB\n"), 0o600)
 	old := configPath
 	configPath = cfg
 	t.Cleanup(func() { configPath = old })
