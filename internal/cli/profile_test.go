@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/wetransform/code-vm/internal/lima"
 )
 
 // makeGitProfile creates a local git repo laid out as a valid profile and
@@ -415,5 +417,86 @@ func TestProfileRemoveRejectsTraversalName(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(victim, "keepme")); err != nil {
 		t.Errorf("victim directory should have survived the rejected remove, stat err = %v", err)
+	}
+}
+
+// installFakeClient substitutes the package's limactl client with a recorder.
+func installFakeClient(t *testing.T, status string) *recordingRunner {
+	t.Helper()
+	r := &recordingRunner{statusOut: status}
+	old := newClient
+	newClient = func() lima.Client { return lima.Client{R: r} }
+	t.Cleanup(func() { newClient = old })
+	return r
+}
+
+func ranAny(calls [][]string, substr string) bool {
+	for _, c := range calls {
+		if strings.Contains(strings.Join(c, " "), substr) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestProfileApplyPushesAndRuns(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	pdir := filepath.Join(dir, "profiles", "p")
+	if err := os.MkdirAll(filepath.Join(pdir, "files"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pdir, "profile.yaml"), []byte("domains: [example.net]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pdir, "files", "marker"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Activate it: append to the scratch config written by withScratchConfig.
+	cfg := configPath
+	b, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, append(b, []byte("profiles:\n  - p\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := installFakeClient(t, "Running")
+	root.SetArgs([]string{"profile", "apply"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("profile apply: %v", err)
+	}
+	for _, want := range []string{
+		"rm -rf /usr/local/share/sandbox-profiles",
+		"install -d -m 0755 /usr/local/share/sandbox-profiles",
+		"env SANDBOX_PROFILES_STRICT=1 /usr/local/lib/sandbox/apply-profiles.sh",
+	} {
+		if !ranAny(r.calls, want) {
+			t.Errorf("missing guest command %q in %v", want, r.calls)
+		}
+	}
+	// manifest.env + marker + files.list pushed, plus the allowlist fragment:
+	// each travels through one `limactl copy`. Content is staged via host temp
+	// files, so the domain itself is asserted at the session layer, not here.
+	copies := 0
+	for _, c := range r.calls {
+		if len(c) > 0 && c[0] == "copy" {
+			copies++
+		}
+	}
+	if copies != 4 {
+		t.Errorf("copies = %d, want 4 (manifest.env, marker, files.list, allowlist fragment)", copies)
+	}
+}
+
+func TestProfileApplyRequiresRunningVM(t *testing.T) {
+	root := NewRootCmd()
+	withScratchConfig(t)
+	installFakeClient(t, "Stopped")
+	root.SetArgs([]string{"profile", "apply"})
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "not running") {
+		t.Errorf("apply on a stopped VM = %v, want a not-running error", err)
 	}
 }
