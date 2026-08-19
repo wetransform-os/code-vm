@@ -28,6 +28,23 @@ CONFIG_FILE="$TEST_CONFIG_DIR/config.yaml"
 # Test workspaces are created under it and removed as they are used.
 PROJECTS_ROOT=$(dirname "$(pwd)")
 
+# A linked worktree's `.git` file points at a gitdir under the *main*
+# checkout, which can sit outside the directory the line above covers (a
+# worktree nested a few levels down, e.g. under a `.claude/worktrees/<name>`
+# checkout used for isolated agent runs). When that gitdir is unreachable in
+# the guest, every git command run there fails with "not a git repository"
+# even though the working tree itself is mounted fine — including host git
+# identity seeding, which shells out to `git` in the guest. Widen the root to
+# also cover the common gitdir in that case; the common case (checkout root's
+# parent already covers its own .git) is untouched.
+GIT_COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2> /dev/null || true)
+if [ -n "$GIT_COMMON_DIR" ]; then
+    case "$GIT_COMMON_DIR" in
+    "$PROJECTS_ROOT"/*) ;; # already covered
+    *) PROJECTS_ROOT=$(dirname "$GIT_COMMON_DIR") ;;
+    esac
+fi
+
 # Minimal resources: this VM builds a few small images and runs two alpines, so
 # it does not need the 12GiB the real one gets, and a smaller disk means a
 # recreate costs less.
