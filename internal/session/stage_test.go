@@ -42,7 +42,7 @@ func TestInstallContentStagesOutsideAgentReach(t *testing.T) {
 	if !strings.Contains(all, "install -d -m 0700 -o "+adminUser) {
 		t.Errorf("staging dir must be created 0700 and owned by the admin user, calls:\n%s", all)
 	}
-	if !strings.Contains(all, "install -m 0444 -o root -g root "+guestPath+" /run/sandbox/squid-allow.d/10-host-config.conf") {
+	if !strings.Contains(all, "install -D -m 0444 -o root -g root "+guestPath+" /run/sandbox/squid-allow.d/10-host-config.conf") {
 		t.Errorf("expected a root install from the staged path, calls:\n%s", all)
 	}
 	if !strings.Contains(all, "rm -f "+guestPath) {

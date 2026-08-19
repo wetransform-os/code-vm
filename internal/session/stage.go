@@ -64,8 +64,10 @@ func installContent(ctx context.Context, d Deps, content []byte, dst, mode, owne
 	if err := d.Client.Copy(ctx, tmp.Name(), staged); err != nil {
 		return err
 	}
+	// -D creates root-owned parents for nested per-profile paths; a no-op for
+	// existing flat destinations (fragment dir, home).
 	if err := d.Client.Admin(ctx, []string{
-		"install", "-m", mode, "-o", owner, "-g", group, staged, dst,
+		"install", "-D", "-m", mode, "-o", owner, "-g", group, staged, dst,
 	}); err != nil {
 		return err
 	}

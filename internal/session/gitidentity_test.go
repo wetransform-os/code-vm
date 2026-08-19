@@ -41,7 +41,7 @@ func TestApplyGitIdentityInstallsByNumericIDs(t *testing.T) {
 	if err := ApplyGitIdentity(context.Background(), d); err != nil {
 		t.Fatalf("ApplyGitIdentity: %v", err)
 	}
-	if !r.ranAny("install -m 0644 -o 1000 -g 100") {
+	if !r.ranAny("install -D -m 0644 -o 1000 -g 100") {
 		t.Errorf("gitconfig must be installed with numeric owner/group, got %v", r.calls)
 	}
 	for _, c := range r.calls {
