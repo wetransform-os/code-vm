@@ -197,3 +197,27 @@ func TestRenderMatchesGolden(t *testing.T) {
 		t.Errorf("rendered template differs from golden file.\nRegenerate with UPDATE_GOLDEN=1 go test ./internal/lima/ after reviewing the diff.\n--- got ---\n%s", out)
 	}
 }
+
+// provision.env carries the merged allowlist (config extraDomains plus
+// profile domains) when the caller resolves one; a nil slice preserves the
+// pre-profile behavior of using the config's extraDomains directly.
+func TestRenderAllowDomains(t *testing.T) {
+	p := testParams(nil)
+	p.AllowDomains = []string{"registry.example.com", "raw.githubusercontent.com"}
+	out, err := Render(testConfig(), p)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	want := `EXTRA_ALLOWED_DOMAINS="registry.example.com raw.githubusercontent.com"`
+	if !strings.Contains(out, want) {
+		t.Errorf("rendered template missing %q", want)
+	}
+
+	out, err = Render(testConfig(), testParams(nil))
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if !strings.Contains(out, `EXTRA_ALLOWED_DOMAINS="registry.example.com"`) {
+		t.Error("nil AllowDomains must fall back to the config's extraDomains")
+	}
+}
