@@ -78,10 +78,20 @@ type Profile struct {
 	Hook     []byte // nil when the manifest declares no hook
 }
 
+// ValidateName reports whether name is usable as a profile name. Exported
+// because the cli joins names into filesystem paths (and one RemoveAll)
+// before Load ever runs.
+func ValidateName(name string) error {
+	if !nameRe.MatchString(name) {
+		return fmt.Errorf("profile name must look like %q, got %q", "fish-shell", name)
+	}
+	return nil
+}
+
 // Load reads and validates the profile at profilesDir/name.
 func Load(profilesDir, name string) (Profile, error) {
-	if !nameRe.MatchString(name) {
-		return Profile{}, fmt.Errorf("profile name must look like %q, got %q", "fish-shell", name)
+	if err := ValidateName(name); err != nil {
+		return Profile{}, err
 	}
 	dir := filepath.Join(profilesDir, name)
 	data, err := os.ReadFile(filepath.Join(dir, "profile.yaml"))

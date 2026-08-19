@@ -73,6 +73,12 @@ func newProfileAddCmd() *cobra.Command {
 			if len(args) == 2 {
 				name = args[1]
 			}
+			// Validated before any filepath.Join: name reaches a clone
+			// destination below, and an unchecked "../../x" would clone
+			// outside the profiles directory.
+			if err := profile.ValidateName(name); err != nil {
+				return err
+			}
 			dir, err := profilesDir()
 			if err != nil {
 				return err
@@ -123,6 +129,15 @@ func newProfileUpdateCmd() *cobra.Command {
 					if e.IsDir() {
 						names = append(names, e.Name())
 					}
+				}
+			}
+			// Validated before any filepath.Join: an explicit "../../repo"
+			// argument would otherwise git-pull an arbitrary directory.
+			// Names from the directory listing can't contain a path
+			// separator, but checking them too is harmless.
+			for _, name := range names {
+				if err := profile.ValidateName(name); err != nil {
+					return err
 				}
 			}
 			out := cmd.OutOrStdout()
@@ -202,6 +217,12 @@ func newProfileRemoveCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
+			// Validated before any filepath.Join: name reaches os.RemoveAll
+			// below, and an unchecked "../../some-folder" would delete an
+			// arbitrary existing path on the host.
+			if err := profile.ValidateName(name); err != nil {
+				return err
+			}
 			c, _, err := loadConfig()
 			if err != nil {
 				return err
