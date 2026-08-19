@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -46,6 +47,11 @@ type Config struct {
 	Disk           string   `yaml:"disk"`
 	ExtraDomains   []string `yaml:"extraDomains,omitempty"`
 	ContainerProxy bool     `yaml:"containerProxy"`
+	// Profiles names the customization bundles applied to the guest, in
+	// order: later profiles win file collisions and the last declared shell
+	// wins. Each name must exist under the profiles directory next to this
+	// config file; that is checked when profiles are loaded, not here.
+	Profiles []string `yaml:"profiles,omitempty"`
 }
 
 // Default returns the built-in configuration. Disk is large because Docker
@@ -141,6 +147,16 @@ func (c Config) Validate() error {
 			return fmt.Errorf("extraDomains[%d]: %w", i, err)
 		}
 	}
+	seenProfiles := map[string]bool{}
+	for i, p := range c.Profiles {
+		if !instanceRe.MatchString(p) {
+			return fmt.Errorf("profiles[%d]: must be a name like %q, got %q", i, "fish-shell", p)
+		}
+		if seenProfiles[p] {
+			return fmt.Errorf("profiles[%d]: %q is listed twice", i, p)
+		}
+		seenProfiles[p] = true
+	}
 	return nil
 }
 
@@ -163,6 +179,30 @@ func (c Config) MountsExclude(path string) error {
 			"shared directory %s would expose the code-vm config (%s) to the agent, "+
 				"which could then widen its own egress allowlist; narrow projectsRoot or the extra mount",
 			m, p)
+	}
+	return nil
+}
+
+// MountsExcludeTree reports an error if any shared directory overlaps dir in
+// either direction: a mount above dir exposes it wholesale, and a mount at or
+// below it exposes part of it. MountsExclude cannot cover the second case —
+// it guards a single file path — and profiles feed the egress allowlist, so
+// an agent-writable profile source would be an allowlist the agent controls.
+func (c Config) MountsExcludeTree(dir string) error {
+	d := filepath.Clean(dir)
+	if m, ok := CoveringMount(c.Mounts(), d); ok {
+		return fmt.Errorf(
+			"shared directory %s would expose the code-vm profiles (%s) to the agent, "+
+				"which could then widen its own egress allowlist; narrow projectsRoot or the extra mount",
+			m, d)
+	}
+	for _, m := range c.Mounts() {
+		m = filepath.Clean(m)
+		if m == d || strings.HasPrefix(m, d+string(filepath.Separator)) {
+			return fmt.Errorf(
+				"shared directory %s lies inside the code-vm profiles directory (%s); "+
+					"the agent must not be able to edit profile sources", m, d)
+		}
 	}
 	return nil
 }
