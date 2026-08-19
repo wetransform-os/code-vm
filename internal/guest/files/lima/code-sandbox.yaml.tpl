@@ -71,7 +71,16 @@ provision:
   owner: "root:root"
   permissions: "{{.Permissions}}"
   overwrite: true
-  content: |
+  # Explicit indentation indicator "2" (not auto-detected): otherwise YAML
+  # derives the block's indentation from its first non-empty line, so content
+  # starting with its own leading space or tab (a patch file, some Markdown)
+  # would shift that detection and corrupt the document. "2" is relative to
+  # this key's own mapping indentation (2, see "path:" above), landing on
+  # column 4 — exactly what `indent 4` below always produces. escapeData
+  # (guestBlockContent in template.go) additionally guards a leading tab
+  # specifically: see its comment for the limactl-side bug that survives even
+  # this indicator.
+  content: |2
 {{indent 4 (escapeData .Content)}}
 {{- end}}
 - mode: system

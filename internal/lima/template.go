@@ -56,9 +56,33 @@ func escapeGuestTemplate(s string) string {
 	return strings.ReplaceAll(s, "{{", `{{"{{"}}`)
 }
 
+// guestBlockContent prepares DataFile content for embedding in a "content:
+// |2" block scalar: escapeGuestTemplate's usual guard, plus a defense against
+// a limactl-side bug found while testing this template against `limactl
+// template copy --embed-all` (the exact call ResolveConfigInto makes, and
+// what `limactl start` does internally for our `base:`-based template). That
+// merge step mis-renders a literal block scalar whose first line's very first
+// byte is a tab: the explicit indentation indicator does not help, and
+// neither does indentation depth — confirmed corrupting the document even
+// though the same content is fine one line down, or led by a space instead.
+// Prefixing a Go template comment (which Lima's own per-file template pass
+// evaluates to nothing, restoring the original bytes) moves that byte off
+// column one whenever it would land there, sidestepping the bug rather than
+// working around it blind.
+func guestBlockContent(s string) string {
+	escaped := escapeGuestTemplate(s)
+	if len(escaped) > 0 && (escaped[0] == ' ' || escaped[0] == '\t') {
+		escaped = "{{/* code-vm: content follows */}}" + escaped
+	}
+	return escaped
+}
+
 // indent prefixes every non-empty line with n spaces. YAML block scalars
-// reproduce content verbatim, so this is all that is needed to embed
-// arbitrary script bodies safely.
+// reproduce content verbatim, so together with an explicit indentation
+// indicator on the block header (see code-sandbox.yaml.tpl's "content: |2")
+// and guestBlockContent's tab guard, this is all that is needed to embed
+// arbitrary file content safely, including content whose own first line
+// starts with a space or tab.
 func indent(n int, s string) string {
 	pad := strings.Repeat(" ", n)
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
@@ -89,7 +113,7 @@ func Render(c config.Config, p RenderParams) (string, error) {
 	}
 	tpl, err := template.New("lima").Funcs(template.FuncMap{
 		"indent":     indent,
-		"escapeData": escapeGuestTemplate,
+		"escapeData": guestBlockContent,
 	}).Parse(raw)
 	if err != nil {
 		return "", fmt.Errorf("parse Lima template: %w", err)
