@@ -23,6 +23,10 @@ type RenderParams struct {
 	// therefore does not belong in Render. See config.ResolveVMType.
 	VMType    string
 	DataFiles []guest.DataFile
+	// AllowDomains is the merged egress allowlist: config extraDomains plus
+	// active profile domains. nil means just the config's extraDomains, so a
+	// caller without profiles renders identically to before profiles existed.
+	AllowDomains []string
 }
 
 // provisionEnv is delivered as a data file so the guest scripts read their
@@ -33,7 +37,11 @@ func provisionEnv(c config.Config, p RenderParams) guest.DataFile {
 	fmt.Fprintf(&b, "AGENT_USER=%s\n", p.AgentUser)
 	fmt.Fprintf(&b, "AGENT_UID=%d\n", p.AgentUID)
 	fmt.Fprintf(&b, "AGENT_GID=%d\n", p.AgentGID)
-	fmt.Fprintf(&b, "EXTRA_ALLOWED_DOMAINS=%q\n", strings.Join(c.ExtraDomains, " "))
+	domains := p.AllowDomains
+	if domains == nil {
+		domains = c.ExtraDomains
+	}
+	fmt.Fprintf(&b, "EXTRA_ALLOWED_DOMAINS=%q\n", strings.Join(domains, " "))
 	fmt.Fprintf(&b, "CONTAINER_PROXY=%t\n", c.ContainerProxy)
 	return guest.DataFile{Path: "/etc/sandbox/provision.env", Permissions: "0444", Content: b.String()}
 }
