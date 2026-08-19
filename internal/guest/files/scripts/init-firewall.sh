@@ -249,7 +249,13 @@ fi
 iptables -A OUTPUT -d 160.79.104.0/23 -p tcp --dport 443 -j ACCEPT
 
 # Root (boot sequence, provisioning) and Squid's own workers exit directly.
+# apt's own HTTP(S) acquire methods run as `_apt`, not root — APT has dropped
+# to a dedicated sandbox user for fetching since APT::Sandbox::User became the
+# default — so a root-driven `apt-get install` (provisioning, profile package
+# installs) needs this rule too, or its fetches hit the default-deny reject
+# indistinguishably from a blocked agent request.
 iptables -A OUTPUT -m owner --uid-owner 0 -j ACCEPT
+iptables -A OUTPUT -m owner --uid-owner _apt -j ACCEPT
 iptables -A OUTPUT -m owner --uid-owner proxy -j ACCEPT
 
 iptables -A OUTPUT -m limit --limit 5/min -j LOG --log-prefix "[FIREWALL-BLOCKED] " --log-level 4

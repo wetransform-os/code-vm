@@ -25,6 +25,12 @@ set -euo pipefail
 # shellcheck source=/dev/null
 . /etc/sandbox/provision.env
 
+# /etc/environment sets these for every PAM session, including this
+# sudo-invoked one — so without clearing them, apt-get below inherits Squid as
+# its proxy instead of going direct as the uid-0 firewall rule intends, and
+# fails closed because the archive mirrors are not on the allowlist.
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+
 PROFILE_ROOT=/usr/local/share/sandbox-profiles
 MANIFEST="$PROFILE_ROOT/manifest.env"
 STRICT="${SANDBOX_PROFILES_STRICT:-0}"
