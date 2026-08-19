@@ -79,6 +79,38 @@ func TestLoadExecutableBit(t *testing.T) {
 	}
 }
 
+// A file cloned from git (or copied by some other tool) can end up
+// executable only for group or other, without the owner bit set. Detection
+// must check &0o111 (any of owner/group/other), not just the owner bit.
+func TestLoadExecutableBitGroupOrOtherOnly(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "p", "description: x\n", map[string]string{
+		"files/group-exec": "x\n",
+		"files/not-exec":   "x\n",
+	})
+	// rwxr-x--- : owner has no exec bit, only group does.
+	if err := os.Chmod(filepath.Join(dir, "p", "files", "group-exec"), 0o650); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(dir, "p", "files", "not-exec"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(dir, "p")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	byRel := map[string]File{}
+	for _, f := range p.Files {
+		byRel[f.Rel] = f
+	}
+	if !byRel["group-exec"].Executable {
+		t.Error("group-only exec bit (0650) not detected as executable")
+	}
+	if byRel["not-exec"].Executable {
+		t.Error("0644 must not be detected as executable")
+	}
+}
+
 func TestLoadRejectsInvalidProfiles(t *testing.T) {
 	tests := []struct {
 		name     string

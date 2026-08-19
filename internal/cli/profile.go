@@ -120,28 +120,39 @@ func newProfileUpdateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			names := args
-			if len(names) == 0 {
+			out := cmd.OutOrStdout()
+			var names []string
+			if len(args) > 0 {
+				// Validated up front and strictly: an explicit "../../repo"
+				// argument would otherwise git-pull an arbitrary directory,
+				// so any non-conforming name aborts the whole invocation
+				// rather than being silently skipped.
+				for _, name := range args {
+					if err := profile.ValidateName(name); err != nil {
+						return err
+					}
+				}
+				names = args
+			} else {
+				// A directory listing is not user input in the same sense:
+				// one stray non-conforming directory (hand-created, or left
+				// over from something else) must not abort updating every
+				// other, otherwise-valid profile.
 				entries, err := os.ReadDir(dir)
 				if err != nil {
 					return fmt.Errorf("no profiles directory at %s", dir)
 				}
 				for _, e := range entries {
-					if e.IsDir() {
-						names = append(names, e.Name())
+					if !e.IsDir() {
+						continue
 					}
+					if err := profile.ValidateName(e.Name()); err != nil {
+						fmt.Fprintf(out, "%s: not a valid profile name, skipped\n", e.Name())
+						continue
+					}
+					names = append(names, e.Name())
 				}
 			}
-			// Validated before any filepath.Join: an explicit "../../repo"
-			// argument would otherwise git-pull an arbitrary directory.
-			// Names from the directory listing can't contain a path
-			// separator, but checking them too is harmless.
-			for _, name := range names {
-				if err := profile.ValidateName(name); err != nil {
-					return err
-				}
-			}
-			out := cmd.OutOrStdout()
 			for _, name := range names {
 				p := filepath.Join(dir, name)
 				if _, err := os.Stat(filepath.Join(p, ".git")); err != nil {
@@ -273,7 +284,7 @@ func newProfileApplyCmd() *cobra.Command {
 			}
 			d := agentDeps(cl, c, profiles)
 			if err := session.PushProfiles(ctx, d, profile.GuestFiles(profiles)); err != nil {
-				return err
+				return fmt.Errorf("push profiles: %w", err)
 			}
 			// Allowlist before hooks run: a profile's own domains must be
 			// live before its hook needs them.
@@ -281,7 +292,7 @@ func newProfileApplyCmd() *cobra.Command {
 				return fmt.Errorf("apply allowlist: %w", err)
 			}
 			if err := session.ApplyProfiles(ctx, d); err != nil {
-				return err
+				return fmt.Errorf("apply profiles: %w", err)
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "Profiles applied.")
 			return nil

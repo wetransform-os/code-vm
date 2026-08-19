@@ -208,7 +208,7 @@ func loadFiles(dir string) ([]File, error) {
 		if err != nil {
 			return err
 		}
-		out = append(out, File{Rel: rel, Content: b, Executable: info.Mode()&0o100 != 0})
+		out = append(out, File{Rel: rel, Content: b, Executable: info.Mode()&0o111 != 0})
 		return nil
 	})
 	if err != nil {
