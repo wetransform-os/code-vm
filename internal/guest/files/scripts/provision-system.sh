@@ -75,6 +75,26 @@ if [ ${#MISSING[@]} -gt 0 ]; then
     apt-get install -y -qq "${MISSING[@]}"
 fi
 
+# ── Profile packages ─────────────────────────────────────────────────────────
+# Declared by active profiles; manifest.env is delivered as mode:data before
+# provisioning runs. Installed here, pre-firewall, like the base packages.
+# apply-profiles.sh repeats a missing-only install for the `profile apply`
+# path on a running VM.
+PROFILE_MANIFEST=/usr/local/share/sandbox-profiles/manifest.env
+if [ -f "$PROFILE_MANIFEST" ]; then
+    # shellcheck source=/dev/null
+    . "$PROFILE_MANIFEST"
+    PROFILE_MISSING=()
+    for p in ${PROFILE_PACKAGES:-}; do
+        dpkg -s "$p" > /dev/null 2>&1 || PROFILE_MISSING+=("$p")
+    done
+    if [ ${#PROFILE_MISSING[@]} -gt 0 ]; then
+        log "Installing profile packages: ${PROFILE_MISSING[*]}"
+        apt-get update -qq
+        apt-get install -y -qq "${PROFILE_MISSING[@]}"
+    fi
+fi
+
 # Rootless Docker manages iptables inside its own network namespace.
 modprobe ip_tables > /dev/null 2>&1 || true
 modprobe iptable_nat > /dev/null 2>&1 || true

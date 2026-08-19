@@ -67,6 +67,12 @@ else
     echo "[boot]          upstream connectivity. Check: code-vm proxy-log denied" >&2
 fi
 
+# Profiles after the firewall (hooks egress through the proxy) and before the
+# CLI update, so profile files and shell are in place the moment the readiness
+# probe releases `code-vm start`. Hook failures warn inside the script; file
+# and shell failures abort the boot via the ERR trap above.
+/usr/local/lib/sandbox/apply-profiles.sh
+
 # Last, and through the proxy. Placed after the connectivity check so that when
 # the installers fail, the warning above has already said whether egress works
 # at all.
