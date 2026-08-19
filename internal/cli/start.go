@@ -12,6 +12,7 @@ import (
 	"github.com/wetransform/code-vm/internal/config"
 	"github.com/wetransform/code-vm/internal/guest"
 	"github.com/wetransform/code-vm/internal/lima"
+	"github.com/wetransform/code-vm/internal/profile"
 	"github.com/wetransform/code-vm/internal/session"
 )
 
@@ -34,41 +35,44 @@ func clientFor(c config.Config) lima.Client {
 // agentDeps builds the session dependencies from one place, so the exec path
 // and `code-vm allow` cannot drift apart on what identity the guest work runs
 // under. The numeric ids mirror what provisioning gave the guest account.
-func agentDeps(cl lima.Client, c config.Config) session.Deps {
+func agentDeps(cl lima.Client, c config.Config, profiles []profile.Profile) session.Deps {
 	return session.Deps{
-		Client:    cl,
-		Config:    c,
-		AgentUser: agentUser,
-		AgentUID:  os.Getuid(),
-		AgentGID:  os.Getgid(),
+		Client:       cl,
+		Config:       c,
+		AgentUser:    agentUser,
+		AgentUID:     os.Getuid(),
+		AgentGID:     os.Getgid(),
+		AllowDomains: profile.AllowDomains(c.ExtraDomains, profiles),
 	}
 }
 
 // renderParams gathers the host-derived values the Lima template needs.
 // The config may leave the hypervisor and which driver is accelerated unset
 // (QEMU/KVM or vz/HVF) as it is a property of the host, not the config.
-func renderParams(c config.Config) (lima.RenderParams, error) {
+func renderParams(c config.Config, profiles []profile.Profile) (lima.RenderParams, error) {
 	files, err := guest.DataFiles()
 	if err != nil {
 		return lima.RenderParams{}, err
 	}
+	files = append(files, profile.GuestFiles(profiles)...)
 	vmType, err := config.ResolveVMType(c.VMType, runtime.GOOS)
 	if err != nil {
 		return lima.RenderParams{}, err
 	}
 	return lima.RenderParams{
-		AgentUser: agentUser,
-		AgentUID:  os.Getuid(),
-		AgentGID:  os.Getgid(),
-		VMType:    vmType,
-		DataFiles: files,
+		AgentUser:    agentUser,
+		AgentUID:     os.Getuid(),
+		AgentGID:     os.Getgid(),
+		VMType:       vmType,
+		DataFiles:    files,
+		AllowDomains: profile.AllowDomains(c.ExtraDomains, profiles),
 	}, nil
 }
 
 // renderInstanceFile writes the rendered Lima instance to a temp file and
 // returns its path. The caller is responsible for removing it.
-func renderInstanceFile(c config.Config) (string, error) {
-	p, err := renderParams(c)
+func renderInstanceFile(c config.Config, profiles []profile.Profile) (string, error) {
+	p, err := renderParams(c, profiles)
 	if err != nil {
 		return "", err
 	}
@@ -97,7 +101,7 @@ func renderInstanceFile(c config.Config) (string, error) {
 // from the rendered template; an existing one cannot be started with a
 // template argument (limactl refuses), so its stored config is replaced with
 // a freshly resolved render first.
-func ensureRunning(ctx context.Context, cl lima.Client, c config.Config) error {
+func ensureRunning(ctx context.Context, cl lima.Client, c config.Config, profiles []profile.Profile) error {
 	if err := c.Validate(); err != nil {
 		return err
 	}
@@ -108,7 +112,7 @@ func ensureRunning(ctx context.Context, cl lima.Client, c config.Config) error {
 	if status == "Running" {
 		return nil
 	}
-	path, err := renderInstanceFile(c)
+	path, err := renderInstanceFile(c, profiles)
 	if err != nil {
 		return err
 	}
@@ -134,11 +138,11 @@ func newStartCmd() *cobra.Command {
 		Use:   "start",
 		Short: "Start the sandbox VM (idempotent)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			c, _, err := loadConfig()
+			c, profiles, _, err := loadConfigWithProfiles()
 			if err != nil {
 				return err
 			}
-			return ensureRunning(cmd.Context(), clientFor(c), c)
+			return ensureRunning(cmd.Context(), clientFor(c), c, profiles)
 		},
 	}
 }

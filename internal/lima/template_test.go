@@ -9,6 +9,7 @@ import (
 
 	"github.com/wetransform/code-vm/internal/config"
 	"github.com/wetransform/code-vm/internal/guest"
+	"github.com/wetransform/code-vm/internal/profile"
 )
 
 func testConfig() config.Config {
@@ -176,10 +177,29 @@ func TestRenderEscapesGuestTemplateSyntax(t *testing.T) {
 	}
 }
 
+func testProfiles() []profile.Profile {
+	return []profile.Profile{{
+		Name: "fixture",
+		Manifest: profile.Manifest{
+			Description: "golden fixture",
+			Packages:    []string{"fish"},
+			Shell:       "/usr/bin/fish",
+			Domains:     []string{"raw.githubusercontent.com"},
+			Hook:        "hook.sh",
+		},
+		Files: []profile.File{{Rel: ".claude/CLAUDE.md", Content: []byte("# rules\n")}},
+		Hook:  []byte("#!/bin/bash\necho hook\n"),
+	}}
+}
+
 func TestRenderMatchesGolden(t *testing.T) {
-	out, err := Render(testConfig(), testParams([]guest.DataFile{{
+	profs := testProfiles()
+	files := append(profile.GuestFiles(profs), guest.DataFile{
 		Path: "/usr/local/lib/sandbox/example.sh", Permissions: "0755", Content: "#!/bin/bash\necho hi\n",
-	}}))
+	})
+	p := testParams(files)
+	p.AllowDomains = profile.AllowDomains(testConfig().ExtraDomains, profs)
+	out, err := Render(testConfig(), p)
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}

@@ -71,10 +71,28 @@ func TestHostFragmentNameSortsAfterBase(t *testing.T) {
 	}
 }
 
+// AllowDomains, not Config.ExtraDomains, is the source of truth: the cli
+// layer merges profile domains into it, and session must not re-derive.
+func TestApplyAllowlistUsesAllowDomains(t *testing.T) {
+	r := &fakeRunner{}
+	d := testDeps(t, r)
+	d.Config.ExtraDomains = nil // deliberately empty: only AllowDomains counts
+	d.AllowDomains = []string{"registry.example.com", "raw.githubusercontent.com"}
+	if err := ApplyAllowlist(context.Background(), d); err != nil {
+		t.Fatalf("ApplyAllowlist: %v", err)
+	}
+	if !r.ranAny("install -m 0444 -o root -g root") {
+		t.Errorf("fragment must be installed for AllowDomains, got %v", r.calls)
+	}
+	if !r.ranAny("squid -k reconfigure") {
+		t.Error("Squid must be reloaded after the allowlist changes")
+	}
+}
+
 func TestApplyAllowlistInstallsFragmentAndReloadsSquid(t *testing.T) {
 	r := &fakeRunner{}
 	d := testDeps(t, r)
-	d.Config.ExtraDomains = []string{"registry.example.com"}
+	d.AllowDomains = []string{"registry.example.com"}
 	if err := ApplyAllowlist(context.Background(), d); err != nil {
 		t.Fatalf("ApplyAllowlist: %v", err)
 	}
@@ -93,7 +111,7 @@ func TestApplyAllowlistSkipsReloadWhenUnchanged(t *testing.T) {
 	existing := FragmentContent([]string{"registry.example.com"})
 	r := &fakeRunner{out: map[string][]byte{fragmentPath(): []byte(existing)}}
 	d := testDeps(t, r)
-	d.Config.ExtraDomains = []string{"registry.example.com"}
+	d.AllowDomains = []string{"registry.example.com"}
 	if err := ApplyAllowlist(context.Background(), d); err != nil {
 		t.Fatalf("ApplyAllowlist: %v", err)
 	}
@@ -120,7 +138,7 @@ func TestApplyAllowlistRemovesFragmentWhenDomainsCleared(t *testing.T) {
 		fragmentPath(): []byte(FragmentContent([]string{"registry.example.com"})),
 	}}
 	d := testDeps(t, r)
-	d.Config.ExtraDomains = nil
+	d.AllowDomains = nil
 	if err := ApplyAllowlist(context.Background(), d); err != nil {
 		t.Fatalf("ApplyAllowlist: %v", err)
 	}

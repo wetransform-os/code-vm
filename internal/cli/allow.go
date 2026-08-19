@@ -175,7 +175,7 @@ func newAllowCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
-			c, path, err := loadConfig()
+			c, profiles, path, err := loadConfigWithProfiles()
 			if err != nil {
 				return err
 			}
@@ -241,7 +241,7 @@ func newAllowCmd() *cobra.Command {
 				fmt.Fprintln(out, "VM is not running; the new domains apply on next start.")
 				return nil
 			}
-			if err := session.ApplyAllowlist(ctx, agentDeps(cl, c)); err != nil {
+			if err := session.ApplyAllowlist(ctx, agentDeps(cl, c, profiles)); err != nil {
 				return fmt.Errorf("apply allowlist: %w", err)
 			}
 			mode, err := currentFirewallMode(ctx, cl)

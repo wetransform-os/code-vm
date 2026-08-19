@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/wetransform/code-vm/internal/config"
+	"github.com/wetransform/code-vm/internal/profile"
 )
 
 var configPath string
@@ -64,5 +65,28 @@ func loadConfig() (config.Config, string, error) {
 	if err := c.MountsExclude(path); err != nil {
 		return config.Config{}, path, err
 	}
+	// Profiles feed the egress allowlist too, so the same rule applies to
+	// their directory — including mounts *inside* it, which the config-file
+	// check cannot see.
+	if err := c.MountsExcludeTree(config.ProfilesDirFor(path)); err != nil {
+		return config.Config{}, path, err
+	}
 	return c, path, nil
+}
+
+// loadConfigWithProfiles is loadConfig plus the active profile bundles.
+// Commands that render the VM or apply session state use this, so a broken
+// profile fails at invocation start rather than mid-boot. Management commands
+// (stop, status, profile list/remove, ...) stay on loadConfig: they must keep
+// working precisely when a listed profile is broken.
+func loadConfigWithProfiles() (config.Config, []profile.Profile, string, error) {
+	c, path, err := loadConfig()
+	if err != nil {
+		return config.Config{}, nil, "", err
+	}
+	profiles, err := profile.LoadAll(config.ProfilesDirFor(path), c.Profiles)
+	if err != nil {
+		return config.Config{}, nil, "", fmt.Errorf("load profiles: %w", err)
+	}
+	return c, profiles, path, nil
 }
