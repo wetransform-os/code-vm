@@ -318,3 +318,102 @@ func TestProfileUpdatePullsAndSkipsNonGit(t *testing.T) {
 		t.Errorf("marker = %q, want %q after update", marker, "v2\n")
 	}
 }
+
+// A profile name is joined straight into filesystem paths (add's clone
+// destination, update's pull directory, remove's RemoveAll target), so a
+// traversal-shaped name must be rejected before any of that happens.
+
+func TestProfileAddRejectsTraversalName(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	src := makeGitProfile(t)
+
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"profile", "add", src, "../../escape"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected add to reject a traversal-shaped name")
+	}
+	if !strings.Contains(err.Error(), "profile name must look like") {
+		t.Errorf("expected the name-validation error, got: %v", err)
+	}
+
+	// Nothing should have been created: validation runs before profilesDir()
+	// is even touched, let alone the clone destination.
+	profilesRoot := filepath.Join(dir, "profiles")
+	if _, statErr := os.Stat(profilesRoot); !os.IsNotExist(statErr) {
+		t.Errorf("expected no profiles directory to be created, stat err = %v", statErr)
+	}
+	escaped := filepath.Clean(filepath.Join(profilesRoot, "../../escape"))
+	if _, statErr := os.Stat(escaped); !os.IsNotExist(statErr) {
+		t.Errorf("expected nothing created at %s, stat err = %v", escaped, statErr)
+	}
+}
+
+func TestProfileUpdateRejectsTraversalName(t *testing.T) {
+	root := NewRootCmd() // one root, reused for the add and the update
+	dir := withScratchConfig(t)
+	src := makeGitProfile(t)
+
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"profile", "add", src})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("add: %v\n%s", err, out.String())
+	}
+
+	out.Reset()
+	root.SetArgs([]string{"profile", "update", "../../escape"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected update to reject a traversal-shaped name")
+	}
+	if !strings.Contains(err.Error(), "profile name must look like") {
+		t.Errorf("expected the name-validation error, got: %v", err)
+	}
+
+	// The legitimate profile must be untouched: names are validated before
+	// the per-name loop runs `git pull` against anything.
+	marker, err := os.ReadFile(filepath.Join(dir, "profiles", "team-fish", "files", "marker"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(marker) != "v1\n" {
+		t.Errorf("marker = %q, want %q (unchanged: reject must happen before any pull)", marker, "v1\n")
+	}
+}
+
+func TestProfileRemoveRejectsTraversalName(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+
+	// A sibling directory outside the profiles tree, standing in for the
+	// arbitrary host path a traversal-shaped name could otherwise reach via
+	// os.RemoveAll.
+	victim := filepath.Join(dir, "victim")
+	if err := os.MkdirAll(victim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(victim, "keepme"), []byte("do not delete\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"profile", "remove", "../victim"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected remove to reject a traversal-shaped name")
+	}
+	if !strings.Contains(err.Error(), "profile name must look like") {
+		t.Errorf("expected the name-validation error, got: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(victim, "keepme")); err != nil {
+		t.Errorf("victim directory should have survived the rejected remove, stat err = %v", err)
+	}
+}
