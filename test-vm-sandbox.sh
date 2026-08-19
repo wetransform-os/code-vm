@@ -474,6 +474,85 @@ if [ -n "$HOST_GIT_EMAIL" ]; then
 fi
 
 echo ""
+echo "── Profiles ──────────────────────────────────────────────────────"
+# Exercises the `profile apply` path end to end: files, packages, shell,
+# domains and a hook. The boot path shares the same guest applier and inputs.
+# Config is backed up and restored, and the guest tree cleared by a final
+# empty apply, so later sections see pre-profile state (except the login
+# shell and installed package, which are documented as not reverting).
+
+cp "$CONFIG_FILE" "$CONFIG_FILE.profiles-backup"
+PROFILE_FIXTURE="$TEST_CONFIG_DIR/profiles/test-profile"
+mkdir -p "$PROFILE_FIXTURE/files/.claude"
+cat > "$PROFILE_FIXTURE/profile.yaml" << 'YAML'
+description: integration fixture
+packages: [fish]
+shell: /usr/bin/fish
+domains: [example.org]
+hook: hook.sh
+YAML
+echo "# fixture rules" > "$PROFILE_FIXTURE/files/.claude/CLAUDE.md"
+cat > "$PROFILE_FIXTURE/hook.sh" << 'SH'
+#!/bin/bash
+set -eu
+echo hook-ran > "$HOME/.profile-hook-ran"
+SH
+yq -i '.profiles = ["test-profile"]' "$CONFIG_FILE"
+
+if "${CODE_VM_ARGS[@]}" profile apply > /dev/null 2>&1; then
+    pass "profile apply succeeds"
+else
+    fail "profile apply succeeds"
+fi
+
+if adm cat "/home/$AGENT_USER/.claude/CLAUDE.md" 2> /dev/null | grep -q "fixture rules"; then
+    pass "profile file lands in the agent home"
+else
+    fail "profile file lands in the agent home"
+fi
+
+if [ "$(adm stat -c '%u' "/home/$AGENT_USER/.claude/CLAUDE.md")" = "$(id -u)" ]; then
+    pass "profile file is agent-owned"
+else
+    fail "profile file is agent-owned"
+fi
+
+assert_ok "profile package is installed" adm dpkg -s fish
+
+if adm getent passwd "$AGENT_USER" | grep -q ':/usr/bin/fish$'; then
+    pass "profile shell is the agent's login shell"
+else
+    fail "profile shell is the agent's login shell"
+fi
+
+assert_ok "profile hook ran as the agent" \
+    adm test -f "/home/$AGENT_USER/.profile-hook-ran"
+
+if [ "$(adm stat -c '%u' "/home/$AGENT_USER/.profile-hook-ran")" = "$(id -u)" ]; then
+    pass "hook artifacts are agent-owned (hook did not run as root)"
+else
+    fail "hook artifacts are agent-owned (hook did not run as root)"
+fi
+
+assert_ok "profile domain is allowed live" \
+    agent curl -fsS -o /dev/null --max-time 20 https://example.org
+
+# The agent must not be able to edit what feeds a root-driven apply.
+assert_fails "agent cannot write the guest profile tree" \
+    agent bash -c 'echo x > /usr/local/share/sandbox-profiles/manifest.env'
+
+# Deactivate: the guest tree is cleared and the domain revoked. Installed
+# package and shell deliberately survive (documented non-goal).
+mv "$CONFIG_FILE.profiles-backup" "$CONFIG_FILE"
+"${CODE_VM_ARGS[@]}" profile apply > /dev/null 2>&1
+assert_fails "deactivated profile's guest tree is gone" \
+    adm test -d /usr/local/share/sandbox-profiles/test-profile
+assert_fails "deactivated profile's domain is revoked" \
+    agent curl -fsS -o /dev/null --max-time 20 https://example.org
+adm rm -f "/home/$AGENT_USER/.profile-hook-ran" > /dev/null 2>&1
+rm -rf "$TEST_CONFIG_DIR/profiles"
+
+echo ""
 echo "── No workspace file is trusted ──────────────────────────────────"
 # Credential injection was removed: .sandbox-secrets.yaml resolved its source:
 # values on the HOST, from a file the agent can author, which is host command

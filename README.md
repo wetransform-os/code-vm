@@ -192,6 +192,63 @@ turning into an exfiltration channel.
 In every mode the agent still cannot reach host services, and DNS tunneling to
 external resolvers stays blocked.
 
+## Profiles
+
+Profiles are shareable customization bundles for the VM: ship a `CLAUDE.md`,
+install tools, set the agent's shell, run setup as the agent user. They live
+in `~/.config/code-vm/profiles/<name>/` and are activated in `config.yaml`:
+
+```yaml
+profiles:
+  - fish-shell
+```
+
+Get one from git, or author it locally:
+
+```
+code-vm profile add https://github.com/your-org/fish-shell-profile fish-shell
+code-vm profile list
+code-vm profile update
+code-vm profile apply     # push changes into the running VM; boots apply automatically
+code-vm profile remove fish-shell
+```
+
+A bundle is a directory:
+
+```
+fish-shell/
+  profile.yaml      # manifest
+  files/            # copied into the agent's home (agent-owned, writable)
+    .config/fish/config.fish
+  hook.sh           # optional; runs as the agent user, through the proxy
+```
+
+`profile.yaml`:
+
+```yaml
+description: Fish as the agent's shell, with fisher
+packages: [fish]            # apt packages, installed as root
+shell: /usr/bin/fish        # agent's login shell
+domains:                    # merged into the egress allowlist
+  - raw.githubusercontent.com
+hook: hook.sh               # runs after files and packages, as the agent
+```
+
+Notes:
+
+- Installing a profile means trusting its author with the agent's home, apt
+  package selection, egress domains, and code execution as the agent user.
+  Hooks never run as root, and a profile cannot touch the locked
+  `.claude/settings.json`.
+- List order matters: later profiles win file collisions; the last declared
+  shell wins.
+- Profile-shipped files are canonical — re-installed on every boot and every
+  apply, so local edits to them do not survive a restart.
+- Hooks run on every boot and every apply: write them idempotent.
+- Deactivating a profile stops applying it, but does not uninstall packages,
+  revert the shell, or delete files already in the home. `code-vm recreate`
+  is the clean-slate path.
+
 ## Security model
 
 The perimeter is the VM boundary. Inside it, the agent is separated from guest
