@@ -76,3 +76,10 @@ func TestCoveringMountPrefersLongestMatch(t *testing.T) {
 		t.Errorf("got (%q, %v), want (\"/home/st/projects\", true)", got, ok)
 	}
 }
+
+func TestProfilesDirFor(t *testing.T) {
+	got := ProfilesDirFor("/home/st/.config/code-vm/config.yaml")
+	if got != "/home/st/.config/code-vm/profiles" {
+		t.Errorf("ProfilesDirFor = %q", got)
+	}
+}

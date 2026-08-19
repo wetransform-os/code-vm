@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -159,5 +160,61 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 	if got.ProjectsRoot != c.ProjectsRoot || len(got.ExtraMounts) != 1 || got.ExtraMounts[0] != "/home/st/other" {
 		t.Errorf("round trip mismatch: %+v", got)
+	}
+}
+
+func TestValidateProfiles(t *testing.T) {
+	tests := []struct {
+		name     string
+		profiles []string
+		wantErr  string
+	}{
+		{"valid names", []string{"fish-shell", "wetf-claude"}, ""},
+		{"empty list", nil, ""},
+		{"bad name", []string{"has/slash"}, "profiles[0]"},
+		{"empty name", []string{""}, "profiles[0]"},
+		{"duplicate", []string{"a", "a"}, "listed twice"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := Default()
+			c.ProjectsRoot = "/home/st/projects"
+			c.Profiles = tt.profiles
+			err := c.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Errorf("Validate: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("Validate = %v, want it to contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestMountsExcludeTree(t *testing.T) {
+	dir := "/home/st/.config/code-vm/profiles"
+	tests := []struct {
+		name    string
+		mount   string
+		wantErr bool
+	}{
+		{"unrelated mount", "/home/st/projects", false},
+		{"sibling with shared prefix", "/home/st/.config/code-vm-other", false},
+		{"mount above the tree", "/home/st/.config", true},
+		{"the tree itself", dir, true},
+		{"mount inside the tree", dir + "/one-profile", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := Default()
+			c.ProjectsRoot = tt.mount
+			err := c.MountsExcludeTree(dir)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("MountsExcludeTree(%q) with mount %q = %v, wantErr %v", dir, tt.mount, err, tt.wantErr)
+			}
+		})
 	}
 }

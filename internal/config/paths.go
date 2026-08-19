@@ -54,3 +54,10 @@ func CoveringMount(mounts []string, path string) (string, bool) {
 	}
 	return best, best != ""
 }
+
+// ProfilesDirFor returns the profile bundle directory belonging to a config
+// file: a "profiles" directory next to it. Deriving it from the config path —
+// rather than a fixed location — keeps a --config test setup fully isolated.
+func ProfilesDirFor(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), "profiles")
+}
