@@ -47,8 +47,11 @@ fi
 
 # ── Packages ─────────────────────────────────────────────────────────────────
 # Missing-only. At boot provision-system.sh has already installed these; on
-# `profile apply` this is what installs newly declared ones. apt runs as root,
-# and root egress is direct (the firewall's uid-0 ACCEPT), so no proxy needed.
+# `profile apply` this is what installs newly declared ones. The proxy vars
+# were unset above because PAM injects them into this sudo session regardless;
+# apt-get itself runs as root here, but its HTTP(S) fetch workers drop to the
+# dedicated `_apt` user, which has its own direct-egress firewall rule (see
+# init-firewall.sh), so no proxy is needed either way.
 MISSING=()
 for p in ${PROFILE_PACKAGES:-}; do
     dpkg -s "$p" > /dev/null 2>&1 || MISSING+=("$p")

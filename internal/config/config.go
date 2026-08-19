@@ -198,7 +198,9 @@ func (c Config) MountsExcludeTree(dir string) error {
 	}
 	for _, m := range c.Mounts() {
 		m = filepath.Clean(m)
-		if m == d || strings.HasPrefix(m, d+string(filepath.Separator)) {
+		// m == d is already covered above: CoveringMount treats equality as
+		// covering, so a mount exactly at d never reaches this loop.
+		if strings.HasPrefix(m, d+string(filepath.Separator)) {
 			return fmt.Errorf(
 				"shared directory %s lies inside the code-vm profiles directory (%s); "+
 					"the agent must not be able to edit profile sources", m, d)

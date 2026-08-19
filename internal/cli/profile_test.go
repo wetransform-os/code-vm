@@ -321,6 +321,44 @@ func TestProfileUpdatePullsAndSkipsNonGit(t *testing.T) {
 	}
 }
 
+// A directory under the profiles root can end up with a name ValidateName
+// rejects (hand-created, left over from something else) without that being
+// anyone's "explicit input" in the traversal sense: update-all must skip it
+// and keep going, not abort the batch the way an explicit bad argument does.
+func TestProfileUpdateAllSkipsNonConformingDirectoryName(t *testing.T) {
+	root := NewRootCmd() // one root, reused for the add and the update
+	dir := withScratchConfig(t)
+	src := makeGitProfile(t)
+
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"profile", "add", src})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("add: %v\n%s", err, out.String())
+	}
+
+	profilesRoot := filepath.Join(dir, "profiles")
+	badDir := filepath.Join(profilesRoot, "bad_name!")
+	if err := os.MkdirAll(badDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	root.SetArgs([]string{"profile", "update"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("update-all must not abort for a non-conforming directory name: %v\n%s", err, out.String())
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "bad_name!") || !strings.Contains(got, "skipped") {
+		t.Errorf("expected the non-conforming directory noted as skipped, got:\n%s", got)
+	}
+	if !strings.Contains(got, "team-fish") || !strings.Contains(got, "updated") {
+		t.Errorf("expected the valid profile to still be updated, got:\n%s", got)
+	}
+}
+
 // A profile name is joined straight into filesystem paths (add's clone
 // destination, update's pull directory, remove's RemoveAll target), so a
 // traversal-shaped name must be rejected before any of that happens.
