@@ -147,14 +147,23 @@ knows how it arrived:
 
 ```
 /usr/local/share/sandbox-profiles/
-  manifest.env                    # rendered: ordered profile list, packages,
-                                  # shell — shell-quoted values
+  manifest.env                    # rendered: ordered profile list, package
+                                  # union, shell, hook list — quoted values
   fish-shell/
     files/...
-    hook.sh
+    files.list                    # the file paths this profile version ships
+    hook                          # hook script, normalized name
   wetf-claude/
     files/.claude/CLAUDE.md
+    files.list
 ```
+
+The applier consumes only what `manifest.env` and each profile's `files.list`
+name. This is what keeps stale guest state inert: `mode: data` delivery can
+overwrite files but never delete them, so a file (or hook) removed from a
+profile would otherwise linger on the persistent disk and keep being applied
+on every boot. `manifest.env` is always delivered — even with zero active
+profiles — so deactivating every profile also deactivates application.
 
 **Path 1 — template render.** The rendered Lima config is already re-applied
 on every start (`ensureRunning` replaces the stored `lima.yaml`), so profiles
@@ -184,23 +193,24 @@ profile semantics. Called identically by `sandbox-boot.sh` at boot and by
 
 **Packages** are installed in two places so both callers are covered.
 `provision-system.sh`, which already owns apt, additionally sources
-`manifest.env` and installs the union of profile packages — at boot this runs
-pre-firewall like the existing packages, so a restart never needs mirror
-egress. `apply-profiles.sh` repeats the same missing-only install as its first
-step, which is a no-op at boot (provisioning just ran) and is what makes
-`profile apply` work on a running VM. That runtime path goes through the
-proxy: whenever any active profile declares packages, code-vm automatically
-adds the Ubuntu mirror domains (`archive.ubuntu.com`, `security.ubuntu.com`,
-`ports.ubuntu.com`) to the allowlist fragment. Deterministic, no temporary
-firewall holes; download-only ingress from distro mirrors is a low-risk
-widening.
+`manifest.env` and installs the union of profile packages at boot.
+`apply-profiles.sh` repeats the same missing-only install as its first step,
+which is a no-op at boot (provisioning just ran) and is what makes
+`profile apply` work on a running VM. No allowlist changes are needed for
+either path: apt runs as root, and root egress is direct by design (the
+firewall's `--uid-owner 0 ACCEPT` rule exists exactly for provisioning-class
+work).
 
 `apply-profiles.sh` steps, in order (step 0 being the package install above):
 
-1. **Files** — for each active profile in list order, copy `files/` into
-   `/home/<agent>/`, chown to `AGENT_UID:AGENT_GID`, mode 0644/0755. Later
-   profiles overwrite earlier ones. Files are re-installed on every boot and
-   every apply: profile-shipped files are canonical (same philosophy as
+1. **Files** — for each active profile in list order, install the files named
+   in its `files.list` from `files/` into `/home/<agent>/`, chown to
+   `AGENT_UID:AGENT_GID`, mode 0644/0755. Later profiles overwrite earlier
+   ones. Parent directories are created agent-owned one segment at a time, and
+   any symlinked segment (or destination) aborts the step: the installs run as
+   root, so a symlink the agent planted in its home must not be able to
+   redirect one outside it. Files are re-installed on every boot and every
+   apply: profile-shipped files are canonical (same philosophy as
    `lock-settings.sh`), so local edits to them do not survive a restart.
 2. **Shell** — `chsh -s <shell>` for the agent user; last profile declaring a
    shell wins. Before switching, verify the path exists and is registered in
@@ -263,7 +273,7 @@ runner, plus the integration script.
   `EXTRA_ALLOWED_DOMAINS`.
 - **Session/apply path** — fake-runner tests asserting the staged-install
   command sequences for `profile apply`, mirroring `allowlist_test.go`; assert
-  the mirror domains appear in the fragment iff packages are declared.
+  profile domains are merged into the allowlist fragment content.
 - **Config** — `profiles` list validation, including the missing/broken
   profile case; `MountsExclude` still covers the profiles directory.
 - **CLI** — `profile add/list/remove/update` against temp directories with
