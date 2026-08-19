@@ -13,6 +13,7 @@ import (
 
 	"github.com/wetransform/code-vm/internal/config"
 	"github.com/wetransform/code-vm/internal/profile"
+	"github.com/wetransform/code-vm/internal/session"
 )
 
 // profilesDir resolves the bundle directory next to the active config file.
@@ -251,9 +252,39 @@ func newProfileApplyCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "apply",
 		Short: "Push the active profiles into the running VM and apply them",
-		Args:  cobra.NoArgs,
+		Long: "Push the profiles listed in the config into the running VM and apply\n" +
+			"them: install files into the agent's home, install packages, set the\n" +
+			"shell and run hooks. The same application also happens automatically on\n" +
+			"every boot; this command exists so profile changes do not need a restart.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return fmt.Errorf("not implemented yet")
+			ctx := cmd.Context()
+			c, profiles, _, err := loadConfigWithProfiles()
+			if err != nil {
+				return err
+			}
+			cl := clientFor(c)
+			status, err := cl.Status(ctx)
+			if err != nil {
+				return err
+			}
+			if status != "Running" {
+				return fmt.Errorf("the VM is not running; profiles apply automatically at boot — start it with `code-vm start`")
+			}
+			d := agentDeps(cl, c, profiles)
+			if err := session.PushProfiles(ctx, d, profile.GuestFiles(profiles)); err != nil {
+				return err
+			}
+			// Allowlist before hooks run: a profile's own domains must be
+			// live before its hook needs them.
+			if err := session.ApplyAllowlist(ctx, d); err != nil {
+				return fmt.Errorf("apply allowlist: %w", err)
+			}
+			if err := session.ApplyProfiles(ctx, d); err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "Profiles applied.")
+			return nil
 		},
 	}
 }
