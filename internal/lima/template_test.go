@@ -7,6 +7,8 @@ import (
 	"testing"
 	"text/template"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/wetransform/code-vm/internal/config"
 	"github.com/wetransform/code-vm/internal/guest"
 	"github.com/wetransform/code-vm/internal/profile"
@@ -177,6 +179,83 @@ func TestRenderEscapesGuestTemplateSyntax(t *testing.T) {
 	}
 }
 
+// findProvisionContent locates the "content" field of the provision entry
+// for path in a generic YAML document, the way a real YAML consumer (Lima
+// itself) would see it after parsing.
+func findProvisionContent(t *testing.T, doc map[string]interface{}, path string) string {
+	t.Helper()
+	prov, ok := doc["provision"].([]interface{})
+	if !ok {
+		t.Fatalf("provision is not a list: %#v", doc["provision"])
+	}
+	for _, e := range prov {
+		m, ok := e.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if m["path"] == path {
+			content, ok := m["content"].(string)
+			if !ok {
+				t.Fatalf("provision entry for %s has no string content: %#v", path, m)
+			}
+			return content
+		}
+	}
+	t.Fatalf("no provision entry found for path %s", path)
+	return ""
+}
+
+// A YAML block scalar with no explicit indentation indicator derives its
+// indentation from its first non-empty line. A DataFile whose own first line
+// starts with a space or a tab (a patch file, some Markdown) would shift that
+// detection and corrupt the document, or fail to parse outright for a tab —
+// verified by rendering with the old "content: |" header and confirming
+// yaml.Unmarshal rejected it before the "content: |2" fix landed. The
+// explicit indicator on the block header must make both survive: the whole
+// rendered document must remain valid YAML, and the content must come back
+// byte-for-byte once the guest's own per-file Go-template pass (what Lima
+// runs on every `mode: data` entry) executes it.
+func TestRenderHandlesContentWithLeadingWhitespace(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"leading space", " echo indented first line\n#!/bin/bash\necho normal\n"},
+		{"leading tab", "\techo tabbed first line\n#!/bin/bash\necho normal\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			files := []guest.DataFile{{
+				Path:        "/usr/local/lib/sandbox/tricky-whitespace.sh",
+				Permissions: "0755",
+				Content:     tc.content,
+			}}
+			out, err := Render(testConfig(), testParams(files))
+			if err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+
+			var doc map[string]interface{}
+			if err := yaml.Unmarshal([]byte(out), &doc); err != nil {
+				t.Fatalf("rendered template is not valid YAML: %v\n--- rendered ---\n%s", err, out)
+			}
+
+			entryContent := findProvisionContent(t, doc, files[0].Path)
+			tpl, err := template.New("roundtrip").Parse(entryContent)
+			if err != nil {
+				t.Fatalf("guest content must parse as a Go template (what Lima does in the guest), got: %v", err)
+			}
+			var b strings.Builder
+			if err := tpl.Execute(&b, nil); err != nil {
+				t.Fatalf("guest content must execute cleanly, got: %v", err)
+			}
+			if b.String() != tc.content {
+				t.Errorf("round trip mismatch:\n--- got ---\n%q\n--- want ---\n%q", b.String(), tc.content)
+			}
+		})
+	}
+}
+
 func testProfiles() []profile.Profile {
 	return []profile.Profile{{
 		Name: "fixture",
@@ -202,6 +281,14 @@ func TestRenderMatchesGolden(t *testing.T) {
 	out, err := Render(testConfig(), p)
 	if err != nil {
 		t.Fatalf("Render: %v", err)
+	}
+	// The whole rendered instance file must be valid YAML, not just the
+	// substrings other tests grep for: a broken block scalar header (or any
+	// other structural mistake) would otherwise only surface at `limactl
+	// start`, against a real VM.
+	var doc map[string]interface{}
+	if err := yaml.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("rendered template is not valid YAML: %v\n--- rendered ---\n%s", err, out)
 	}
 	golden := filepath.Join("testdata", "golden-template.yaml")
 	if os.Getenv("UPDATE_GOLDEN") == "1" {
