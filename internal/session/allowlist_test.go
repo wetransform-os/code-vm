@@ -81,7 +81,7 @@ func TestApplyAllowlistUsesAllowDomains(t *testing.T) {
 	if err := ApplyAllowlist(context.Background(), d); err != nil {
 		t.Fatalf("ApplyAllowlist: %v", err)
 	}
-	if !r.ranAny("install -m 0444 -o root -g root") {
+	if !r.ranAny("install -D -m 0444 -o root -g root") {
 		t.Errorf("fragment must be installed for AllowDomains, got %v", r.calls)
 	}
 	if !r.ranAny("squid -k reconfigure") {
@@ -99,7 +99,7 @@ func TestApplyAllowlistInstallsFragmentAndReloadsSquid(t *testing.T) {
 	if !r.ranAny("copy") {
 		t.Error("fragment must be copied into the guest")
 	}
-	if !r.ranAny("install -m 0444 -o root -g root") {
+	if !r.ranAny("install -D -m 0444 -o root -g root") {
 		t.Error("fragment must be installed root-owned and read-only")
 	}
 	if !r.ranAny("squid -k reconfigure") {
