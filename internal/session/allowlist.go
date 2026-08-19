@@ -38,6 +38,11 @@ type Deps struct {
 	AgentUID  int
 	AgentGID  int
 	Host      HostRunner
+
+	// AllowDomains is the full egress allowlist for the host-config fragment:
+	// config extraDomains merged with active profile domains. The cli layer
+	// computes it from trusted inputs only; session setup never derives it.
+	AllowDomains []string
 }
 
 // FragmentContent renders the Squid ACL lines for the host config's domains.
@@ -59,7 +64,9 @@ func FragmentContent(domains []string) string {
 //
 // The host config is the only trusted source for this: it lives outside every
 // mount, so the agent cannot widen its own egress by editing a file in the
-// workspace.
+// workspace. Active profile manifests are part of that trusted host input
+// too — the cli layer merges their domains into d.AllowDomains before this
+// runs, so this function itself never needs to know profiles exist.
 func ApplyAllowlist(ctx context.Context, d Deps) error {
 	dst := fragmentDir + "/" + HostFragmentName
 	// Absent counts as a change. ReadFile keeps cat's "No such file" off the
@@ -67,7 +74,7 @@ func ApplyAllowlist(ctx context.Context, d Deps) error {
 	// legitimately missing whenever no extra domains are configured.
 	current := d.Client.ReadFile(ctx, dst)
 
-	if len(d.Config.ExtraDomains) == 0 {
+	if len(d.AllowDomains) == 0 {
 		if len(current) == 0 {
 			return nil
 		}
@@ -79,7 +86,7 @@ func ApplyAllowlist(ctx context.Context, d Deps) error {
 		return reloadSquid(ctx, d)
 	}
 
-	want := FragmentContent(d.Config.ExtraDomains)
+	want := FragmentContent(d.AllowDomains)
 	if string(current) == want {
 		return nil
 	}

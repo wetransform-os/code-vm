@@ -46,7 +46,7 @@ func TestEnsureRunningStartsWhenAbsentOrStopped(t *testing.T) {
 	for _, status := range []string{"", "Stopped", "Broken"} {
 		t.Run("status="+status, func(t *testing.T) {
 			r := &recordingRunner{statusOut: status}
-			if err := ensureRunning(context.Background(), lima.Client{R: r}, testCfg(t)); err != nil {
+			if err := ensureRunning(context.Background(), lima.Client{R: r}, testCfg(t), nil); err != nil {
 				t.Fatalf("ensureRunning: %v", err)
 			}
 			if !r.started() {
@@ -61,7 +61,7 @@ func TestEnsureRunningStartsWhenAbsentOrStopped(t *testing.T) {
 // config via `template copy --embed-all` and then start by name.
 func TestEnsureRunningUpdatesStoredConfigWhenStopped(t *testing.T) {
 	r := &recordingRunner{statusOut: "Stopped"}
-	if err := ensureRunning(context.Background(), lima.Client{R: r}, testCfg(t)); err != nil {
+	if err := ensureRunning(context.Background(), lima.Client{R: r}, testCfg(t), nil); err != nil {
 		t.Fatalf("ensureRunning: %v", err)
 	}
 	var sawResolve, sawPlainStart bool
@@ -87,7 +87,7 @@ func TestEnsureRunningUpdatesStoredConfigWhenStopped(t *testing.T) {
 
 func TestEnsureRunningIsNoOpWhenRunning(t *testing.T) {
 	r := &recordingRunner{statusOut: "Running"}
-	if err := ensureRunning(context.Background(), lima.Client{R: r}, testCfg(t)); err != nil {
+	if err := ensureRunning(context.Background(), lima.Client{R: r}, testCfg(t), nil); err != nil {
 		t.Fatalf("ensureRunning: %v", err)
 	}
 	if r.started() {
@@ -97,7 +97,7 @@ func TestEnsureRunningIsNoOpWhenRunning(t *testing.T) {
 
 func TestRenderInstanceFileIsPrivateAndComplete(t *testing.T) {
 	c := testCfg(t)
-	path, err := renderInstanceFile(c)
+	path, err := renderInstanceFile(c, nil)
 	if err != nil {
 		t.Fatalf("renderInstanceFile: %v", err)
 	}
@@ -124,10 +124,13 @@ func TestRenderInstanceFileIsPrivateAndComplete(t *testing.T) {
 	if !strings.Contains(s, c.ProjectsRoot) {
 		t.Error("rendered instance must mount the projects root")
 	}
+	if !strings.Contains(s, "/usr/local/share/sandbox-profiles/manifest.env") {
+		t.Error("rendered instance must always deliver manifest.env, even with no profiles")
+	}
 }
 
 func TestRenderParamsUsesHostIdentity(t *testing.T) {
-	p, err := renderParams(testCfg(t))
+	p, err := renderParams(testCfg(t), nil)
 	if err != nil {
 		t.Fatalf("renderParams: %v", err)
 	}
@@ -150,7 +153,7 @@ func TestRenderParamsResolvesTheHostHypervisor(t *testing.T) {
 	if err != nil {
 		t.Skipf("code-vm does not support %s hosts: %v", runtime.GOOS, err)
 	}
-	p, err := renderParams(testCfg(t))
+	p, err := renderParams(testCfg(t), nil)
 	if err != nil {
 		t.Fatalf("renderParams: %v", err)
 	}
@@ -167,7 +170,7 @@ func TestRenderParamsRejectsTheOtherHostsHypervisor(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		c.VMType = config.VMTypeQEMU
 	}
-	if _, err := renderParams(c); err == nil {
+	if _, err := renderParams(c, nil); err == nil {
 		t.Errorf("renderParams with vmType %q on %s = nil error, want a failure", c.VMType, runtime.GOOS)
 	}
 }

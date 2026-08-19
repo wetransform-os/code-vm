@@ -40,7 +40,7 @@ func newMountCmd() *cobra.Command {
 			"restarted to apply the change.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, path, err := loadConfig()
+			c, profiles, path, err := loadConfigWithProfiles()
 			if err != nil {
 				return err
 			}
@@ -71,7 +71,7 @@ func newMountCmd() *cobra.Command {
 			if err := cl.Stop(cmd.Context()); err != nil {
 				return err
 			}
-			return ensureRunning(cmd.Context(), cl, updated)
+			return ensureRunning(cmd.Context(), cl, updated, profiles)
 		},
 	}
 }

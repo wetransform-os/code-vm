@@ -76,8 +76,41 @@ provision:
     AGENT_USER=devuser
     AGENT_UID=1000
     AGENT_GID=1000
-    EXTRA_ALLOWED_DOMAINS="registry.example.com"
+    EXTRA_ALLOWED_DOMAINS="registry.example.com raw.githubusercontent.com"
     CONTAINER_PROXY=false
+- mode: data
+  path: "/usr/local/share/sandbox-profiles/manifest.env"
+  owner: "root:root"
+  permissions: "0444"
+  overwrite: true
+  content: |
+    # Written by code-vm. Sourced by provision-system.sh and apply-profiles.sh.
+    PROFILES="fixture"
+    PROFILE_PACKAGES="fish"
+    PROFILE_SHELL="/usr/bin/fish"
+    PROFILE_HOOKS="fixture"
+- mode: data
+  path: "/usr/local/share/sandbox-profiles/fixture/files/.claude/CLAUDE.md"
+  owner: "root:root"
+  permissions: "0444"
+  overwrite: true
+  content: |
+    # rules
+- mode: data
+  path: "/usr/local/share/sandbox-profiles/fixture/files.list"
+  owner: "root:root"
+  permissions: "0444"
+  overwrite: true
+  content: |
+    .claude/CLAUDE.md
+- mode: data
+  path: "/usr/local/share/sandbox-profiles/fixture/hook"
+  owner: "root:root"
+  permissions: "0555"
+  overwrite: true
+  content: |
+    #!/bin/bash
+    echo hook
 - mode: data
   path: "/usr/local/lib/sandbox/example.sh"
   owner: "root:root"
