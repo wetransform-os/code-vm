@@ -2,11 +2,23 @@ package session
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/wetransform/code-vm/internal/guest"
 	"github.com/wetransform/code-vm/internal/profile"
 )
+
+// findCallIndex locates the index in calls of the first call containing substr.
+// Returns -1 if not found.
+func findCallIndex(calls [][]string, substr string) int {
+	for i, c := range calls {
+		if strings.Contains(strings.Join(c, " "), substr) {
+			return i
+		}
+	}
+	return -1
+}
 
 func TestPushProfilesReplacesTheGuestTree(t *testing.T) {
 	r := &fakeRunner{}
@@ -19,12 +31,30 @@ func TestPushProfilesReplacesTheGuestTree(t *testing.T) {
 	if err := PushProfiles(context.Background(), d, files); err != nil {
 		t.Fatalf("PushProfiles: %v", err)
 	}
-	if !r.ranAny("rm -rf " + profile.GuestRoot) {
+
+	// Verify the semantic guarantee: remove old tree BEFORE recreating and
+	// installing. A reordering to recreate-then-remove would silently break
+	// 'deactivated profiles disappear', so ordering is critical.
+	rmIdx := findCallIndex(r.calls, "rm -rf "+profile.GuestRoot)
+	mkdirIdx := findCallIndex(r.calls, "install -d -m 0755 "+profile.GuestRoot)
+	copyIdx := findCallIndex(r.calls, "copy")
+
+	if rmIdx < 0 {
 		t.Error("the old tree must be removed so deactivated profiles disappear")
 	}
-	if !r.ranAny("install -d -m 0755 " + profile.GuestRoot) {
+	if mkdirIdx < 0 {
 		t.Error("the tree root must be recreated")
 	}
+	if copyIdx < 0 {
+		t.Error("files must be staged and installed")
+	}
+	if rmIdx >= 0 && mkdirIdx >= 0 && rmIdx >= mkdirIdx {
+		t.Errorf("rm must happen before mkdir: rm at index %d, mkdir at index %d", rmIdx, mkdirIdx)
+	}
+	if mkdirIdx >= 0 && copyIdx >= 0 && mkdirIdx >= copyIdx {
+		t.Errorf("mkdir must happen before file install: mkdir at index %d, copy at index %d", mkdirIdx, copyIdx)
+	}
+
 	// installContent stages via `limactl copy` then root-installs; -D creates
 	// the nested per-profile parents.
 	copies := 0
