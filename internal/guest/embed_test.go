@@ -54,3 +54,19 @@ func TestLimaTemplateIsPresent(t *testing.T) {
 		t.Fatal("LimaTemplate is empty")
 	}
 }
+
+func TestApplyProfilesScriptIsDelivered(t *testing.T) {
+	files, err := DataFiles()
+	if err != nil {
+		t.Fatalf("DataFiles: %v", err)
+	}
+	for _, f := range files {
+		if f.Path == "/usr/local/lib/sandbox/apply-profiles.sh" {
+			if f.Permissions != "0755" {
+				t.Errorf("apply-profiles.sh permissions = %s, want 0755", f.Permissions)
+			}
+			return
+		}
+	}
+	t.Error("apply-profiles.sh is not delivered to the guest")
+}
