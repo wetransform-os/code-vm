@@ -341,6 +341,10 @@ func TestLoadRejectsInvalidDeclarations(t *testing.T) {
 	}{
 		{"bad secret name", "secrets:\n  'has space': {}\n", nil, "secret name"},
 		{"bad var name", "vars:\n  'has/slash': {}\n", nil, "var name"},
+		{"ESC in secret suggest", "secrets:\n  tok:\n    suggest: \"gopass show \\efoo\"\n", nil, "suggest must be a single-line printable string"},
+		{"newline in secret description", "secrets:\n  tok:\n    description: |\n      line one\n      line two\n", nil, "description must be a single-line printable string"},
+		{"tab in var description", "vars:\n  url:\n    description: \"a\\tb\"\n", nil, "description must be a single-line printable string"},
+		{"newline in top-level description", "description: |\n  line one\n  line two\n", nil, "description must be a single-line printable string"},
 		{"template/file collision", "description: x\n",
 			map[string]string{"files/.npmrc": "a\n", "templates/.npmrc": "b\n"},
 			"both files/ and templates/"},
@@ -357,6 +361,25 @@ func TestLoadRejectsInvalidDeclarations(t *testing.T) {
 				t.Errorf("Load error = %v, want it to contain %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// Ordinary single-line text with spaces is exactly the common case and must
+// not be rejected by the control-character check.
+func TestLoadAcceptsOrdinaryDescriptionsAndSuggestions(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "p", `
+description: A profile with ordinary spaced-out words
+secrets:
+  tok:
+    description: A token with spaces in its description
+    suggest: gopass show -o some/path with spaces
+vars:
+  url:
+    description: A var description with spaces
+`, nil)
+	if _, err := Load(dir, "p"); err != nil {
+		t.Fatalf("Load: %v", err)
 	}
 }
 
