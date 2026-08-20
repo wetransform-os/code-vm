@@ -542,6 +542,14 @@ else
     fail "profile shell is the agent's login shell"
 fi
 
+# sandbox-exec never goes through login(1), so it must read the passwd shell
+# itself — both for the interactive fallback and for $SHELL in the session.
+if [ "$(agent printenv SHELL)" = "/usr/bin/fish" ]; then
+    pass "SHELL in agent sessions reflects the profile shell"
+else
+    fail "SHELL in agent sessions reflects the profile shell (got: $(agent printenv SHELL))"
+fi
+
 assert_ok "profile hook ran as the agent" \
     adm test -f "/home/$AGENT_USER/.profile-hook-ran"
 
