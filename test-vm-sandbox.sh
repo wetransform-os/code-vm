@@ -471,6 +471,15 @@ assert_fails "removing the domain from the host config revokes it" \
     agent curl -fsS -o /dev/null --max-time 20 https://example.org
 rm -f "$CONFIG_FILE.suite-backup"
 
+# A firewall mode switch reruns init-firewall.sh in the guest. It must not
+# reseed the host-config fragment from provision.env's EXTRA_ALLOWED_DOMAINS
+# — which is only refreshed at VM start — or a revocation made above would
+# only hold until the next mode toggle brought it straight back.
+"${CODE_VM_ARGS[@]}" firewall audit > /dev/null
+"${CODE_VM_ARGS[@]}" firewall allowlist > /dev/null
+assert_fails "a firewall mode switch does not resurrect a revoked domain" \
+    agent curl -fsS -o /dev/null --max-time 20 https://example.org
+
 # A mount that exposes the config would let the agent edit its own allowlist.
 if "${CODE_VM_ARGS[@]}" --config "$CONFIG_FILE" status > /dev/null 2>&1; then
     pass "status works with the config outside every mount"

@@ -120,6 +120,10 @@ func TestApplyAllowlistSkipsReloadWhenUnchanged(t *testing.T) {
 	}
 }
 
+// Empty domains and no existing fragment must stay a no-op: installing a
+// comment-only fragment here would be harmless on its own, but would force a
+// pointless Squid reload on every invocation of a domain-less setup that
+// never had domains to begin with.
 func TestApplyAllowlistNoDomainsAndNoFragmentIsNoOp(t *testing.T) {
 	r := &fakeRunner{}
 	d := testDeps(t, r)
@@ -132,8 +136,13 @@ func TestApplyAllowlistNoDomainsAndNoFragmentIsNoOp(t *testing.T) {
 }
 
 // Removing the last domain from the config has to take effect, or a revoked
-// domain would stay allowed for the rest of the VM's lifetime.
-func TestApplyAllowlistRemovesFragmentWhenDomainsCleared(t *testing.T) {
+// domain would stay allowed for the rest of the VM's lifetime. The fragment
+// is not deleted, though: it is replaced with a comment-only fragment, so
+// its mere presence keeps meaning "an invocation has spoken since boot" —
+// see ApplyAllowlist's doc comment. Deleting it would let init-firewall.sh
+// treat the next firewall-mode switch as a fresh boot and reseed the
+// revoked domains from provision.env.
+func TestApplyAllowlistInstallsCommentOnlyFragmentWhenDomainsCleared(t *testing.T) {
 	r := &fakeRunner{out: map[string][]byte{
 		fragmentPath(): []byte(FragmentContent([]string{"registry.example.com"})),
 	}}
@@ -142,11 +151,31 @@ func TestApplyAllowlistRemovesFragmentWhenDomainsCleared(t *testing.T) {
 	if err := ApplyAllowlist(context.Background(), d); err != nil {
 		t.Fatalf("ApplyAllowlist: %v", err)
 	}
-	if !r.ranAny("rm -f " + fragmentPath()) {
-		t.Errorf("stale fragment must be removed, got %v", r.calls)
+	if r.ranAny("rm -f " + fragmentPath()) {
+		t.Errorf("fragment must not be deleted, got %v", r.calls)
+	}
+	if !r.ranAny("install -D -m 0444 -o root -g root") {
+		t.Errorf("a comment-only fragment must be installed, got %v", r.calls)
 	}
 	if !r.ranAny("squid -k reconfigure") {
-		t.Error("Squid must be reloaded after removing the fragment")
+		t.Error("Squid must be reloaded after replacing the fragment")
+	}
+}
+
+// Once a comment-only fragment is installed, re-running with the same empty
+// allowlist must be a no-op: otherwise every invocation of a domain-less
+// setup that previously had domains would reload Squid pointlessly forever.
+func TestApplyAllowlistSkipsReloadWhenAlreadyCommentOnly(t *testing.T) {
+	r := &fakeRunner{out: map[string][]byte{
+		fragmentPath(): []byte(FragmentContent(nil)),
+	}}
+	d := testDeps(t, r)
+	d.AllowDomains = nil
+	if err := ApplyAllowlist(context.Background(), d); err != nil {
+		t.Fatalf("ApplyAllowlist: %v", err)
+	}
+	if r.ranAny("copy") || r.ranAny("squid -k reconfigure") {
+		t.Errorf("expected only the state read, got %v", r.calls)
 	}
 }
 
