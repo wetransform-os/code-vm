@@ -291,6 +291,41 @@ func TestLoadAllPreservesOrderAndRejectsDuplicates(t *testing.T) {
 	}
 }
 
+// A files/ entry in one profile and a templates/ entry in another, at the
+// same Rel, cannot be resolved consistently by list order: boot delivers
+// templates last (template wins) while apply pushes rendered templates
+// before ApplyProfiles re-lays the file tree (files/ wins). Same config,
+// different winner depending on path, so LoadAll rejects it outright.
+func TestLoadAllRejectsCrossProfileFileTemplateCollision(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "a", "description: a\n", map[string]string{"files/.npmrc": "from-a\n"})
+	writeProfile(t, dir, "b", "secrets:\n  tok: {}\n", map[string]string{"templates/.npmrc": "${secret:tok}\n"})
+
+	_, err := LoadAll(dir, []string{"a", "b"})
+	if err == nil {
+		t.Fatal("expected a cross-profile files/-vs-templates/ collision error")
+	}
+	if !strings.Contains(err.Error(), "a") || !strings.Contains(err.Error(), "b") || !strings.Contains(err.Error(), ".npmrc") {
+		t.Errorf("error must name both profiles and the path, got %v", err)
+	}
+}
+
+// Two profiles that both ship the same Rel as files/ is the ordinary,
+// well-defined case: later wins, no error.
+func TestLoadAllAllowsSameKindCrossProfileCollision(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "a", "description: a\n", map[string]string{"files/.npmrc": "from-a\n"})
+	writeProfile(t, dir, "b", "description: b\n", map[string]string{"files/.npmrc": "from-b\n"})
+
+	ps, err := LoadAll(dir, []string{"a", "b"})
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if len(ps) != 2 {
+		t.Fatalf("LoadAll returned %d profiles, want 2", len(ps))
+	}
+}
+
 func TestLoadTemplatesAndDeclarations(t *testing.T) {
 	dir := t.TempDir()
 	writeProfile(t, dir, "maven", `

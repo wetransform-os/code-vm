@@ -233,10 +233,23 @@ func Load(profilesDir, name string) (Profile, error) {
 	return p, nil
 }
 
+// shippedAs records which profile shipped a given Rel and how (as a file or
+// as a template), for LoadAll's cross-profile collision check.
+type shippedAs struct {
+	profile string
+	kind    string // "files/" or "templates/"
+}
+
 // LoadAll loads the named profiles in order. Order is meaningful and
-// preserved: later profiles win file collisions, and hooks run in this order.
+// preserved: later profiles win same-kind file collisions (file/file,
+// template/template), and hooks run in this order. A files/-vs-templates/
+// collision across profiles is rejected outright rather than resolved by
+// order: boot (template wins) and apply (files/ wins) run the two delivery
+// mechanisms in different orders, so which one would actually win differs
+// between the two paths for the same config — see the design spec.
 func LoadAll(profilesDir string, names []string) ([]Profile, error) {
 	seen := map[string]bool{}
+	shipped := map[string]shippedAs{} // Rel -> who shipped it, and how
 	out := make([]Profile, 0, len(names))
 	for _, n := range names {
 		if seen[n] {
@@ -246,6 +259,26 @@ func LoadAll(profilesDir string, names []string) ([]Profile, error) {
 		p, err := Load(profilesDir, n)
 		if err != nil {
 			return nil, err
+		}
+		for _, f := range p.Files {
+			if prior, ok := shipped[f.Rel]; ok && prior.kind != "files/" {
+				return nil, fmt.Errorf(
+					"%s: profile %s ships files/%s but profile %s already ships templates/%s; "+
+						"a files/-vs-templates/ collision across profiles cannot be resolved consistently "+
+						"between boot and apply, so it is rejected outright",
+					f.Rel, n, f.Rel, prior.profile, f.Rel)
+			}
+			shipped[f.Rel] = shippedAs{profile: n, kind: "files/"}
+		}
+		for _, t := range p.Templates {
+			if prior, ok := shipped[t.Rel]; ok && prior.kind != "templates/" {
+				return nil, fmt.Errorf(
+					"%s: profile %s ships templates/%s but profile %s already ships files/%s; "+
+						"a files/-vs-templates/ collision across profiles cannot be resolved consistently "+
+						"between boot and apply, so it is rejected outright",
+					t.Rel, n, t.Rel, prior.profile, t.Rel)
+			}
+			shipped[t.Rel] = shippedAs{profile: n, kind: "templates/"}
 		}
 		out = append(out, p)
 	}

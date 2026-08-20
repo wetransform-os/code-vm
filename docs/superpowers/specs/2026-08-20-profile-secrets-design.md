@@ -98,8 +98,14 @@ Validation, host-side at load, extending the existing rules:
   charset, no `..`, no absolute paths, no symlinks anywhere (tree root,
   directories, entries), locked Claude settings paths rejected.
 - A template and a `files/` entry targeting the same destination within one
-  profile is a validation error. Across profiles, list order wins, as with
-  files.
+  profile is a validation error. Across profiles, a same-kind collision
+  (`files/` vs `files/`, `templates/` vs `templates/`) still resolves by list
+  order, later wins. A `files/`-vs-`templates/` collision across profiles is
+  rejected as a `LoadAll` validation error instead: boot delivers rendered
+  templates after the file tree (template wins) while `profile apply` pushes
+  rendered templates before re-laying the file tree (`files/` wins), so which
+  entry would actually win differs between the two paths for the same
+  config — order-respecting suppression can't be made consistent across both.
 - A template referencing an undeclared `${secret:...}` or `${var:...}` name
   is a load-time validation error: bundles cannot quietly depend on inputs
   they never declared. Declared-but-unreferenced names are allowed (hooks
