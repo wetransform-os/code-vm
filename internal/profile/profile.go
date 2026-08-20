@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 
@@ -57,17 +58,26 @@ func isBlank(content []byte) bool {
 	return len(bytes.Trim(content, "\n")) == 0
 }
 
-// isSingleLinePrintable reports whether s contains no control characters: no
-// newline, tab, ESC, or other C0 code, and no DEL (0x7f). Applied to manifest
-// strings that are printed verbatim by `code-vm secrets` and `profile list`,
-// and — most sensitively — copied byte-for-byte into the ready-to-paste
-// MissingSecretSnippet a user pastes into secrets.yaml. Without this check, a
-// hostile bundle could hide a shell command behind a terminal escape
-// sequence (displays clean, copies with a hidden suffix) or inject a
-// newline to forge extra YAML entries in the pasted snippet.
+// isSingleLinePrintable reports whether s contains no control or invisible-
+// formatting characters: no newline, tab, ESC, or other C0 code; no DEL
+// (0x7f); no C1 control (0x80-0x9f); and nothing in Unicode's Cf (format)
+// category, which covers bidi overrides/isolates (U+202A-202E, U+2066-2069 —
+// the Trojan Source class, CVE-2021-42574) and zero-width characters
+// (U+200B ZWSP, U+200E/U+200F, U+061C, …). Ordinary printable text —
+// letters, digits, spaces, punctuation, and legitimate non-ASCII letters
+// like accented characters — is unaffected: only Cc/C1/Cf are rejected, not
+// all non-ASCII.
+//
+// Applied to manifest strings that are printed verbatim by `code-vm secrets`
+// and `profile list`, and — most sensitively — copied byte-for-byte into the
+// ready-to-paste MissingSecretSnippet a user pastes into secrets.yaml.
+// Without this check, a hostile bundle could hide a shell command behind a
+// terminal escape sequence or a bidi override (displays clean, copies with
+// hidden or reordered content) or inject a newline to forge extra YAML
+// entries in the pasted snippet.
 func isSingleLinePrintable(s string) bool {
 	for _, r := range s {
-		if r < 0x20 || r == 0x7f {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) || unicode.Is(unicode.Cf, r) {
 			return false
 		}
 	}
