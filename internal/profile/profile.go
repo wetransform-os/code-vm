@@ -38,7 +38,7 @@ var shellRe = regexp.MustCompile(`^/[a-zA-Z0-9._/-]+$`)
 // relPathRe matches the file paths a profile may ship. Deliberately
 // conservative: paths are written line-by-line into files.list, which the
 // guest applier reads back, so whitespace and metacharacters are rejected
-// wholesale. ".." is excluded by the per-segment check in loadFiles.
+// wholesale. ".." is excluded by the per-segment check in loadTree.
 var relPathRe = regexp.MustCompile(`^[a-zA-Z0-9._/-]+$`)
 
 // hookRe matches the manifest's hook entry: a plain file name inside the
@@ -55,6 +55,23 @@ var hookRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 // start`, against a real VM. Rejected here instead, at load time.
 func isBlank(content []byte) bool {
 	return len(bytes.Trim(content, "\n")) == 0
+}
+
+// isSingleLinePrintable reports whether s contains no control characters: no
+// newline, tab, ESC, or other C0 code, and no DEL (0x7f). Applied to manifest
+// strings that are printed verbatim by `code-vm secrets` and `profile list`,
+// and — most sensitively — copied byte-for-byte into the ready-to-paste
+// MissingSecretSnippet a user pastes into secrets.yaml. Without this check, a
+// hostile bundle could hide a shell command behind a terminal escape
+// sequence (displays clean, copies with a hidden suffix) or inject a
+// newline to forge extra YAML entries in the pasted snippet.
+func isSingleLinePrintable(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // forbiddenFiles are agent-home paths a profile may never ship: the
@@ -236,6 +253,9 @@ func LoadAll(profilesDir string, names []string) ([]Profile, error) {
 }
 
 func validateManifest(m Manifest) error {
+	if !isSingleLinePrintable(m.Description) {
+		return fmt.Errorf("description must be a single-line printable string (no control characters)")
+	}
 	for i, pkg := range m.Packages {
 		if !packageRe.MatchString(pkg) {
 			return fmt.Errorf("packages[%d]: not a Debian package name: %q", i, pkg)
@@ -252,14 +272,23 @@ func validateManifest(m Manifest) error {
 	if m.Hook != "" && !hookRe.MatchString(m.Hook) {
 		return fmt.Errorf("hook must be a plain file name inside the profile, got %q", m.Hook)
 	}
-	for name := range m.Secrets {
+	for name, spec := range m.Secrets {
 		if err := ValidateName(name); err != nil {
 			return fmt.Errorf("secret name %q: must look like %q", name, "repo-user")
 		}
+		if !isSingleLinePrintable(spec.Description) {
+			return fmt.Errorf("secret %q: description must be a single-line printable string (no control characters)", name)
+		}
+		if !isSingleLinePrintable(spec.Suggest) {
+			return fmt.Errorf("secret %q: suggest must be a single-line printable string (no control characters)", name)
+		}
 	}
-	for name := range m.Vars {
+	for name, spec := range m.Vars {
 		if err := ValidateName(name); err != nil {
 			return fmt.Errorf("var name %q: must look like %q", name, "artifactory-url")
+		}
+		if !isSingleLinePrintable(spec.Description) {
+			return fmt.Errorf("var %q: description must be a single-line printable string (no control characters)", name)
 		}
 	}
 	return nil
