@@ -36,16 +36,20 @@ func GuestFiles(profiles []Profile) []guest.DataFile {
 			})
 			list.WriteString(f.Rel + "\n")
 		}
-		if len(p.Files) > 0 {
-			// files.list names what THIS version ships; the applier installs
-			// exactly these, so files dropped from the profile stop being
-			// applied even though mode:data cannot delete their leftovers.
-			out = append(out, guest.DataFile{
-				Path:        path.Join(GuestRoot, p.Name, "files.list"),
-				Permissions: "0444",
-				Content:     list.String(),
-			})
-		}
+		// files.list names what THIS version ships; the applier installs
+		// exactly these, so files dropped from the profile stop being applied
+		// even though mode:data cannot delete their leftovers. Rendered for
+		// EVERY active profile, empty when it ships no files: like
+		// manifest.env, it must always be delivered, because a profile
+		// version that drops its last file still needs to overwrite a
+		// previous version's non-empty files.list with an empty one — a
+		// boot-path mode:data entry can never delete a stale file, only
+		// overwrite it.
+		out = append(out, guest.DataFile{
+			Path:        path.Join(GuestRoot, p.Name, "files.list"),
+			Permissions: "0444",
+			Content:     list.String(),
+		})
 		if p.Hook != nil {
 			out = append(out, guest.DataFile{
 				Path:        path.Join(GuestRoot, p.Name, "hook"),
