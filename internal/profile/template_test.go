@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/wetransform/code-vm/internal/config"
 )
 
@@ -99,7 +101,7 @@ func TestResolveSecretsMissingMappingHasSnippet(t *testing.T) {
 		t.Fatal("expected an error for an unmapped secret")
 	}
 	for _, want := range []string{"repo-user", "maven", "Artifactory user",
-		"secrets:", "command: gopass show -o wetf/user"} {
+		"secrets:", `command: "gopass show -o wetf/user"`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error missing %q:\n%s", want, err)
 		}
@@ -127,6 +129,36 @@ func TestResolveVars(t *testing.T) {
 	_, err = ResolveVars(declared, nil)
 	if err == nil || !strings.Contains(err.Error(), "vars:") || !strings.Contains(err.Error(), "url") {
 		t.Errorf("missing var must produce a config.yaml snippet, got %v", err)
+	}
+}
+
+// MissingSecretSnippet's command must be a YAML double-quoted scalar so a
+// suggest containing a YAML-significant character round-trips byte-for-byte
+// when the snippet is pasted into secrets.yaml and parsed back. An unquoted
+// `printf '#token'` would otherwise have its trailing `'#token'` reparsed as
+// a comment, and one containing ": " would be split into extra mapping keys.
+func TestMissingSecretSnippetQuotesSuggestForYAMLRoundTrip(t *testing.T) {
+	for _, suggest := range []string{
+		`printf '#token'`,
+		`echo foo: bar`,
+		`echo "quoted"`,
+		`echo \backslash`,
+	} {
+		t.Run(suggest, func(t *testing.T) {
+			snippet := MissingSecretSnippet(DeclaredSecret{Name: "tok", Suggest: suggest})
+			var doc struct {
+				Secrets map[string]struct {
+					Command string `yaml:"command"`
+				} `yaml:"secrets"`
+			}
+			if err := yaml.Unmarshal([]byte(snippet), &doc); err != nil {
+				t.Fatalf("snippet did not parse as YAML: %v\nsnippet:\n%s", err, snippet)
+			}
+			got := doc.Secrets["tok"].Command
+			if got != suggest {
+				t.Errorf("round-tripped command = %q, want %q\nsnippet:\n%s", got, suggest, snippet)
+			}
+		})
 	}
 }
 

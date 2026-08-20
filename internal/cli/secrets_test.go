@@ -36,7 +36,7 @@ func TestSecretsListsMappedAndUnmapped(t *testing.T) {
 	}
 	s := out.String()
 	for _, want := range []string{"mapped-one", "missing-one", "UNMAPPED", "url",
-		"command: gopass show -o x"} {
+		`command: "gopass show -o x"`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("output missing %q:\n%s", want, s)
 		}
