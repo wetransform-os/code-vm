@@ -63,29 +63,48 @@ if [ ${#MISSING[@]} -gt 0 ]; then
     apt-get install -y -qq "${MISSING[@]}"
 fi
 
-# ── Files ────────────────────────────────────────────────────────────────────
-# ensure_parents creates the parent directories for a home-relative path, one
-# segment at a time, agent-owned. A symlinked segment aborts: these installs
-# run as root, so a symlink the agent planted (~/.config -> /etc) must not be
-# able to redirect one outside the home.
-ensure_parents() {
-    local rel_dir cur="$AGENT_HOME" seg
-    rel_dir=$(dirname "$1")
-    [ "$rel_dir" = "." ] && return 0
-    local IFS=/
-    for seg in $rel_dir; do
-        [ -n "$seg" ] || continue
-        cur="$cur/$seg"
-        if [ -L "$cur" ]; then
-            echo "[profiles] ERROR: $cur is a symlink; refusing to install through it" >&2
-            return 1
-        fi
-        if [ ! -d "$cur" ]; then
-            mkdir -m 0755 "$cur"
-            chown "$AGENT_UID:$AGENT_GID" "$cur"
-        fi
-    done
+# ── Agent execution helpers ──────────────────────────────────────────────────
+# Root-driven but running as the agent, so nothing the agent can write may
+# influence execution: no login shell, system PATH only, BASH_ENV/ENV cleared.
+# Egress goes through the proxy, so anything run this way reaches exactly what
+# the active profiles' domains (plus the base allowlist) permit, and it all
+# lands in the proxy log. Two variants sharing identical hardening: one runs a
+# script file (hooks), the other a command string (file installs below).
+run_as_agent() {
+    setpriv --reuid "$AGENT_UID" --regid "$AGENT_GID" --init-groups \
+        env -u BASH_ENV -u ENV \
+        HOME="$AGENT_HOME" \
+        USER="$AGENT_USER" \
+        XDG_RUNTIME_DIR="/run/user/${AGENT_UID}" \
+        PATH=/usr/local/bin:/usr/bin:/bin \
+        http_proxy=http://localhost:3128 \
+        https_proxy=http://localhost:3128 \
+        no_proxy=localhost,127.0.0.1 \
+        bash "$1"
 }
+
+run_as_agent_sh() {
+    setpriv --reuid "$AGENT_UID" --regid "$AGENT_GID" --init-groups \
+        env -u BASH_ENV -u ENV \
+        HOME="$AGENT_HOME" \
+        USER="$AGENT_USER" \
+        XDG_RUNTIME_DIR="/run/user/${AGENT_UID}" \
+        PATH=/usr/local/bin:/usr/bin:/bin \
+        http_proxy=http://localhost:3128 \
+        https_proxy=http://localhost:3128 \
+        no_proxy=localhost,127.0.0.1 \
+        bash -c "$@"
+}
+
+# ── Files ────────────────────────────────────────────────────────────────────
+# Installs run with the agent's own privileges (run_as_agent_sh above), not
+# root's. Source files under $PROFILE_ROOT are root-owned 0444/0555,
+# world-readable, so the agent can always read them; the install itself
+# (mkdir -p, rm -f, install) touches only the agent's home, using exactly the
+# access the agent already has there. A symlink the agent plants at a
+# destination or parent segment can therefore only redirect the write to
+# somewhere the agent could write anyway — there is no privilege boundary left
+# to cross, so the root-write TOCTOU class this replaces is structurally gone.
 
 # Profile files are canonical: re-installed on every boot and every apply, so
 # local edits to them do not survive (same philosophy as lock-settings.sh).
@@ -97,13 +116,14 @@ for name in ${PROFILES:-}; do
         [ -n "$rel" ] || continue
         src="$PROFILE_ROOT/$name/files/$rel"
         dst="$AGENT_HOME/$rel"
-        ensure_parents "$rel"
         mode=0644
         [ -x "$src" ] && mode=0755
-        # Remove first: install would write through a symlink the agent left
-        # at the destination. A directory at $dst fails rm -f and aborts loud.
-        rm -f "$dst"
-        install -m "$mode" -o "$AGENT_UID" -g "$AGENT_GID" "$src" "$dst"
+        # Positional args, not string interpolation into the bash -c body:
+        # robust regardless of charset, though $src/$dst are host-validated
+        # ([a-zA-Z0-9._/-] for $rel; $AGENT_HOME/$PROFILE_ROOT are fixed safe
+        # paths) so this belt-and-braces quoting is defense in depth.
+        # shellcheck disable=SC2016 # the inner bash -c program expands its own args
+        run_as_agent_sh 'mkdir -p "$(dirname "$2")" && rm -f "$2" && install -m "$1" "$3" "$2"' _ "$mode" "$dst" "$src"
         log "  $name: ~/$rel"
     done < "$list"
 done
@@ -125,24 +145,12 @@ if [ -n "${PROFILE_SHELL:-}" ]; then
 fi
 
 # ── Hooks ────────────────────────────────────────────────────────────────────
-# Same hardened pattern as update-agent-clis.sh: root-driven but running as
-# the agent, so nothing the agent can write may influence it — no login shell,
+# Same hardened pattern as the files step above (via run_as_agent, its
+# script-file counterpart to run_as_agent_sh): root-driven but running as the
+# agent, so nothing the agent can write may influence it — no login shell,
 # system PATH only, BASH_ENV/ENV cleared. Egress goes through the proxy, so a
 # hook reaches exactly what its profile's domains (plus the base allowlist)
 # permit, and everything it does lands in the proxy log.
-run_as_agent() {
-    setpriv --reuid "$AGENT_UID" --regid "$AGENT_GID" --init-groups \
-        env -u BASH_ENV -u ENV \
-        HOME="$AGENT_HOME" \
-        USER="$AGENT_USER" \
-        XDG_RUNTIME_DIR="/run/user/${AGENT_UID}" \
-        PATH=/usr/local/bin:/usr/bin:/bin \
-        http_proxy=http://localhost:3128 \
-        https_proxy=http://localhost:3128 \
-        no_proxy=localhost,127.0.0.1 \
-        bash "$1"
-}
-
 HOOK_FAILED=0
 for name in ${PROFILE_HOOKS:-}; do
     hook="$PROFILE_ROOT/$name/hook"
