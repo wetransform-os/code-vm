@@ -134,6 +134,7 @@ func TestLoadRejectsInvalidProfiles(t *testing.T) {
 			map[string]string{"files/.claude/settings.local.json": "{}"}, "locked Claude settings"},
 		{"file path with spaces", "description: x\n",
 			map[string]string{"files/has space": "x"}, "file path"},
+		{"files is a regular file, not a directory", "description: x\n", nil, "files must be a directory"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -141,6 +142,11 @@ func TestLoadRejectsInvalidProfiles(t *testing.T) {
 			name := "p"
 			if tt.name == "bad name is rejected before disk IO" {
 				name = "no/slashes"
+			} else if tt.name == "files is a regular file, not a directory" {
+				writeProfile(t, dir, name, tt.manifest, nil)
+				if err := os.WriteFile(filepath.Join(dir, name, "files"), []byte("not a dir"), 0o644); err != nil {
+					t.Fatal(err)
+				}
 			} else {
 				writeProfile(t, dir, name, tt.manifest, tt.files)
 			}
@@ -160,6 +166,24 @@ func TestLoadRejectsSymlinkInFiles(t *testing.T) {
 	}
 	if _, err := Load(dir, "p"); err == nil || !strings.Contains(err.Error(), "regular files") {
 		t.Errorf("Load error = %v, want symlink rejection", err)
+	}
+}
+
+// A hostile bundle could symlink its manifest-named hook at a file the
+// installing user can read but the profile author cannot see, which
+// os.ReadFile would then follow and deliver world-readable into the guest.
+func TestLoadRejectsSymlinkHook(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "secret")
+	if err := os.WriteFile(target, []byte("private"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeProfile(t, dir, "p", "description: x\nhook: hook.sh\n", nil)
+	if err := os.Symlink(target, filepath.Join(dir, "p", "hook.sh")); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	if _, err := Load(dir, "p"); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Errorf("Load error = %v, want symlink hook rejection", err)
 	}
 }
 

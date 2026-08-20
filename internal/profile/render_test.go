@@ -71,6 +71,37 @@ func TestGuestFilesLayout(t *testing.T) {
 	}
 }
 
+// A profile with zero files must still emit an (empty) files.list. Boot-path
+// delivery (mode:data) cannot delete a stale non-empty files.list from a
+// previous version, so a profile version that drops its last file needs an
+// empty files.list to make the applier stop reinstalling it.
+func TestGuestFilesEmitsEmptyFilesListForFilesLessProfile(t *testing.T) {
+	profiles := []Profile{{
+		Name:     "no-files",
+		Manifest: Manifest{Packages: []string{"git"}},
+	}}
+	files := GuestFiles(profiles)
+	byPath := map[string]string{}
+	perms := map[string]string{}
+	found := false
+	for _, f := range files {
+		byPath[f.Path] = f.Content
+		perms[f.Path] = f.Permissions
+		if f.Path == GuestRoot+"/no-files/files.list" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected %s/no-files/files.list to be rendered even with zero files, got %+v", GuestRoot, files)
+	}
+	if byPath[GuestRoot+"/no-files/files.list"] != "" {
+		t.Errorf("files.list content = %q, want empty", byPath[GuestRoot+"/no-files/files.list"])
+	}
+	if perms[GuestRoot+"/no-files/files.list"] != "0444" {
+		t.Errorf("files.list permissions = %q, want 0444", perms[GuestRoot+"/no-files/files.list"])
+	}
+}
+
 func TestGuestFilesAlwaysIncludesManifest(t *testing.T) {
 	files := GuestFiles(nil)
 	if len(files) != 1 || files[0].Path != ManifestPath {

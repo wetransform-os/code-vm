@@ -114,7 +114,19 @@ func Load(profilesDir, name string) (Profile, error) {
 		return Profile{}, fmt.Errorf("profile %s: %w", name, err)
 	}
 	if m.Hook != "" {
-		b, err := os.ReadFile(filepath.Join(dir, m.Hook))
+		hookPath := filepath.Join(dir, m.Hook)
+		// Lstat, not Stat: a hostile bundle could symlink its hook at a file
+		// the installing user can read but the profile author cannot (or at
+		// content that changes between validation and delivery). Following
+		// it would deliver that file world-readable (0555) into the guest.
+		fi, err := os.Lstat(hookPath)
+		if err != nil {
+			return Profile{}, fmt.Errorf("profile %s: read hook: %w", name, err)
+		}
+		if !fi.Mode().IsRegular() {
+			return Profile{}, fmt.Errorf("profile %s: hook must be a regular file (symlinks are rejected)", name)
+		}
+		b, err := os.ReadFile(hookPath)
 		if err != nil {
 			return Profile{}, fmt.Errorf("profile %s: read hook: %w", name, err)
 		}
@@ -170,11 +182,22 @@ func validateManifest(m Manifest) error {
 // delivery.
 func loadFiles(dir string) ([]File, error) {
 	root := filepath.Join(dir, "files")
-	if _, err := os.Stat(root); errors.Is(err, os.ErrNotExist) {
+	info, err := os.Stat(root)
+	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		// A non-directory "files" makes WalkDir yield a single entry with rel
+		// ".", which passes every check below (it is a regular file, it
+		// matches relPathRe, it is not forbidden) and would otherwise be
+		// silently installed as-is.
+		return nil, fmt.Errorf("files must be a directory")
+	}
 	var out []File
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
