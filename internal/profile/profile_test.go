@@ -290,3 +290,83 @@ func TestLoadAllPreservesOrderAndRejectsDuplicates(t *testing.T) {
 		t.Errorf("no names must load cleanly to an empty slice, got %v, %v", ps, err)
 	}
 }
+
+func TestLoadTemplatesAndDeclarations(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "maven", `
+description: maven setup
+secrets:
+  repo-user:
+    description: Artifactory user
+    suggest: gopass show -o wetf/artifactory-user
+  repo-password: {}
+vars:
+  artifactory-url:
+    description: Base URL
+`, map[string]string{
+		"templates/.m2/settings.xml": "<settings>${secret:repo-user}/${var:artifactory-url}</settings>\n",
+	})
+	p, err := Load(dir, "maven")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if p.Manifest.Secrets["repo-user"].Suggest != "gopass show -o wetf/artifactory-user" {
+		t.Errorf("Suggest not loaded: %+v", p.Manifest.Secrets)
+	}
+	if _, ok := p.Manifest.Secrets["repo-password"]; !ok {
+		t.Error("empty-spec secret not loaded")
+	}
+	if len(p.Templates) != 1 || p.Templates[0].Rel != ".m2/settings.xml" {
+		t.Fatalf("Templates = %+v", p.Templates)
+	}
+}
+
+// A profile carrying only declarations and templates is a valid profile.
+func TestLoadTemplatesOnlyProfileIsNotEmpty(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "p", "secrets:\n  tok: {}\n", map[string]string{
+		"templates/.npmrc": "//registry/:_authToken=${secret:tok}\n",
+	})
+	if _, err := Load(dir, "p"); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+}
+
+func TestLoadRejectsInvalidDeclarations(t *testing.T) {
+	tests := []struct {
+		name     string
+		manifest string
+		files    map[string]string
+		wantErr  string
+	}{
+		{"bad secret name", "secrets:\n  'has space': {}\n", nil, "secret name"},
+		{"bad var name", "vars:\n  'has/slash': {}\n", nil, "var name"},
+		{"template/file collision", "description: x\n",
+			map[string]string{"files/.npmrc": "a\n", "templates/.npmrc": "b\n"},
+			"both files/ and templates/"},
+		{"template ships locked settings", "description: x\n",
+			map[string]string{"templates/.claude/settings.json": "{}\n"},
+			"locked Claude settings"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeProfile(t, dir, "p", tt.manifest, tt.files)
+			_, err := Load(dir, "p")
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("Load error = %v, want it to contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsSymlinkedTemplatesRoot(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "p", "description: x\n", map[string]string{"files/a": "x\n"})
+	if err := os.Symlink(t.TempDir(), filepath.Join(dir, "p", "templates")); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	if _, err := Load(dir, "p"); err == nil || !strings.Contains(err.Error(), "symlinks are rejected") {
+		t.Errorf("Load error = %v, want symlink rejection", err)
+	}
+}

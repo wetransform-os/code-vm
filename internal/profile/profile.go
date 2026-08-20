@@ -64,14 +64,27 @@ var forbiddenFiles = map[string]bool{
 	".claude/settings.local.json": true,
 }
 
+// SecretSpec declares a secret the profile requires.
+type SecretSpec struct {
+	Description string `yaml:"description"`
+	Suggest     string `yaml:"suggest"`
+}
+
+// VarSpec declares a variable the profile requires.
+type VarSpec struct {
+	Description string `yaml:"description"`
+}
+
 // Manifest is the profile.yaml schema. Every key is optional, but a profile
 // that declares nothing at all is rejected.
 type Manifest struct {
-	Description string   `yaml:"description"`
-	Packages    []string `yaml:"packages"`
-	Shell       string   `yaml:"shell"`
-	Domains     []string `yaml:"domains"`
-	Hook        string   `yaml:"hook"`
+	Description string                `yaml:"description"`
+	Packages    []string              `yaml:"packages"`
+	Shell       string                `yaml:"shell"`
+	Domains     []string              `yaml:"domains"`
+	Hook        string                `yaml:"hook"`
+	Secrets     map[string]SecretSpec `yaml:"secrets"`
+	Vars        map[string]VarSpec    `yaml:"vars"`
 }
 
 // File is one file a profile ships into the agent home.
@@ -83,11 +96,12 @@ type File struct {
 
 // Profile is a loaded, validated bundle.
 type Profile struct {
-	Name     string
-	Dir      string
-	Manifest Manifest
-	Files    []File // sorted by Rel
-	Hook     []byte // nil when the manifest declares no hook
+	Name      string
+	Dir       string
+	Manifest  Manifest
+	Files     []File // sorted by Rel
+	Templates []File // sorted by Rel
+	Hook      []byte // nil when the manifest declares no hook
 }
 
 // ValidateName reports whether name is usable as a profile name. Exported
@@ -145,6 +159,19 @@ func Load(profilesDir, name string) (Profile, error) {
 	if p.Files, err = loadFiles(dir); err != nil {
 		return Profile{}, fmt.Errorf("profile %s: %w", name, err)
 	}
+	if p.Templates, err = loadTemplates(dir); err != nil {
+		return Profile{}, fmt.Errorf("profile %s: %w", name, err)
+	}
+	// Check for collisions between files/ and templates/.
+	fileRels := map[string]bool{}
+	for _, f := range p.Files {
+		fileRels[f.Rel] = true
+	}
+	for _, tpl := range p.Templates {
+		if fileRels[tpl.Rel] {
+			return Profile{}, fmt.Errorf("profile %s: %s is shipped by both files/ and templates/; pick one", name, tpl.Rel)
+		}
+	}
 	if m.Hook != "" {
 		hookPath := filepath.Join(dir, m.Hook)
 		// Lstat, not Stat: a hostile bundle could symlink its hook at a file
@@ -167,8 +194,8 @@ func Load(profilesDir, name string) (Profile, error) {
 		}
 		p.Hook = b
 	}
-	if len(p.Files) == 0 && len(m.Packages) == 0 && m.Shell == "" && len(m.Domains) == 0 && m.Hook == "" {
-		return Profile{}, fmt.Errorf("profile %s: declares nothing: no files, packages, shell, domains or hook", name)
+	if len(p.Files) == 0 && len(m.Packages) == 0 && m.Shell == "" && len(m.Domains) == 0 && m.Hook == "" && len(p.Templates) == 0 && len(m.Secrets) == 0 && len(m.Vars) == 0 {
+		return Profile{}, fmt.Errorf("profile %s: declares nothing: no files, packages, shell, domains, hook, templates, secrets or vars", name)
 	}
 	return p, nil
 }
@@ -209,15 +236,25 @@ func validateManifest(m Manifest) error {
 	if m.Hook != "" && !hookRe.MatchString(m.Hook) {
 		return fmt.Errorf("hook must be a plain file name inside the profile, got %q", m.Hook)
 	}
+	for name := range m.Secrets {
+		if err := ValidateName(name); err != nil {
+			return fmt.Errorf("secret name %q: must look like %q", name, "repo-user")
+		}
+	}
+	for name := range m.Vars {
+		if err := ValidateName(name); err != nil {
+			return fmt.Errorf("var name %q: must look like %q", name, "artifactory-url")
+		}
+	}
 	return nil
 }
 
-// loadFiles reads the files/ tree. Only regular files are accepted: a symlink
+// loadTree reads a tree from dir/subdir. Only regular files are accepted: a symlink
 // could escape the tree on the host, or change content between validation and
-// delivery.
-func loadFiles(dir string) ([]File, error) {
-	root := filepath.Join(dir, "files")
-	// Lstat, not Stat: a symlinked files/ root would let WalkDir walk
+// delivery. subdir is used as the prefix in error messages and the subdirectory name.
+func loadTree(dir, subdir string) ([]File, error) {
+	root := filepath.Join(dir, subdir)
+	// Lstat, not Stat: a symlinked root would let WalkDir walk
 	// wherever it points, including a directory an agent controls.
 	info, err := os.Lstat(root)
 	if errors.Is(err, os.ErrNotExist) {
@@ -227,13 +264,13 @@ func loadFiles(dir string) ([]File, error) {
 		return nil, err
 	}
 	if !info.Mode().IsDir() {
-		// Folds in the former "files is a regular file" case: a non-directory
-		// "files" makes WalkDir yield a single entry with rel ".", which
+		// Folds in the former "subdir is a regular file" case: a non-directory
+		// subdir makes WalkDir yield a single entry with rel ".", which
 		// passes every check below (it is a regular file, it matches
 		// relPathRe, it is not forbidden) and would otherwise be silently
-		// installed as-is. A symlinked "files" (to a directory or otherwise)
+		// installed as-is. A symlinked subdir (to a directory or otherwise)
 		// is rejected the same way, by the same message.
-		return nil, fmt.Errorf("files must be a real directory (symlinks are rejected)")
+		return nil, fmt.Errorf("%s must be a real directory (symlinks are rejected)", subdir)
 	}
 	var out []File
 	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
@@ -249,7 +286,7 @@ func loadFiles(dir string) ([]File, error) {
 		}
 		rel = filepath.ToSlash(rel)
 		if !d.Type().IsRegular() {
-			return fmt.Errorf("files/%s: only regular files may be shipped (symlinks are rejected)", rel)
+			return fmt.Errorf("%s/%s: only regular files may be shipped (symlinks are rejected)", subdir, rel)
 		}
 		if !relPathRe.MatchString(rel) {
 			return fmt.Errorf("file path %q: only [a-zA-Z0-9._/-] is allowed", rel)
@@ -260,14 +297,14 @@ func loadFiles(dir string) ([]File, error) {
 			}
 		}
 		if forbiddenFiles[rel] {
-			return fmt.Errorf("files/%s: profiles may not ship the locked Claude settings", rel)
+			return fmt.Errorf("%s/%s: profiles may not ship the locked Claude settings", subdir, rel)
 		}
 		b, err := os.ReadFile(p)
 		if err != nil {
 			return err
 		}
 		if isBlank(b) {
-			return fmt.Errorf("files/%s: must not be blank (empty or newline-only content cannot be embedded)", rel)
+			return fmt.Errorf("%s/%s: must not be blank (empty or newline-only content cannot be embedded)", subdir, rel)
 		}
 		info, err := d.Info()
 		if err != nil {
@@ -281,4 +318,18 @@ func loadFiles(dir string) ([]File, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Rel < out[j].Rel })
 	return out, nil
+}
+
+// loadFiles reads the files/ tree. Only regular files are accepted: a symlink
+// could escape the tree on the host, or change content between validation and
+// delivery.
+func loadFiles(dir string) ([]File, error) {
+	return loadTree(dir, "files")
+}
+
+// loadTemplates reads the templates/ tree. Only regular files are accepted: a symlink
+// could escape the tree on the host, or change content between validation and
+// delivery.
+func loadTemplates(dir string) ([]File, error) {
+	return loadTree(dir, "templates")
 }
