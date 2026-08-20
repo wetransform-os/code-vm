@@ -443,15 +443,17 @@ func TestLoadAcceptsAccentedDescription(t *testing.T) {
 // text, alongside the original C0/DEL cases.
 func TestSingleLinePrintable(t *testing.T) {
 	reject := map[string]string{
-		"newline":          "a\nb",
-		"tab":              "a\tb",
-		"ESC (C0)":         "a\x1bb",
-		"DEL (0x7f)":       "a\x7fb",
-		"C1 CSI (U+009B)":  "a\u009bb",
-		"NEL (U+0085, C1)": "a\u0085b",
-		"RLO (U+202E)":     "a\u202eb",
-		"LRI (U+2066)":     "a\u2066b",
-		"ZWSP (U+200B)":    "a\u200bb",
+		"newline":                          "a\nb",
+		"tab":                              "a\tb",
+		"ESC (C0)":                         "a\x1bb",
+		"DEL (0x7f)":                       "a\x7fb",
+		"C1 CSI (U+009B)":                  "a\u009bb",
+		"NEL (U+0085, C1)":                 "a\u0085b",
+		"RLO (U+202E)":                     "a\u202eb",
+		"LRI (U+2066)":                     "a\u2066b",
+		"ZWSP (U+200B)":                    "a\u200bb",
+		"LINE SEPARATOR (U+2028, Zl)":      "a\u2028b",
+		"PARAGRAPH SEPARATOR (U+2029, Zp)": "a\u2029b",
 	}
 	for name, s := range reject {
 		t.Run("rejects "+name, func(t *testing.T) {
