@@ -10,12 +10,11 @@ import (
 	"github.com/wetransform/code-vm/internal/session"
 )
 
-// agentCommand returns the command to run in the guest, defaulting to an
-// interactive login shell.
+// agentCommand returns the command to run in the guest. A bare invocation
+// passes no command at all: only the guest knows the agent's login shell
+// (profiles may chsh it), and sandbox-exec's fallback launches that shell —
+// naming bash here would override it.
 func agentCommand(args []string) []string {
-	if len(args) == 0 {
-		return []string{"bash", "-l"}
-	}
 	return args
 }
 
