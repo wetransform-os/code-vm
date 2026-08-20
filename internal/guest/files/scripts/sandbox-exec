@@ -34,7 +34,9 @@ fi
 # invisible here unless read explicitly — both for the interactive fallback
 # and for $SHELL, which subprocesses consult.
 login_shell=$(getent passwd "$AGENT_USER" | cut -d: -f7)
-[ -x "$login_shell" ] || login_shell=/bin/bash
+# -f as well as -x: -x alone is true for directories, and a broken passwd
+# entry must degrade to bash, not to an unexecutable fallback.
+{ [ -f "$login_shell" ] && [ -x "$login_shell" ]; } || login_shell=/bin/bash
 
 cmd=("$@")
 if [ ${#cmd[@]} -eq 0 ]; then
