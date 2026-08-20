@@ -204,14 +204,16 @@ work).
 `apply-profiles.sh` steps, in order (step 0 being the package install above):
 
 1. **Files** — for each active profile in list order, install the files named
-   in its `files.list` from `files/` into `/home/<agent>/`, chown to
-   `AGENT_UID:AGENT_GID`, mode 0644/0755. Later profiles overwrite earlier
-   ones. Parent directories are created agent-owned one segment at a time, and
-   any symlinked segment (or destination) aborts the step: the installs run as
-   root, so a symlink the agent planted in its home must not be able to
-   redirect one outside it. Files are re-installed on every boot and every
-   apply: profile-shipped files are canonical (same philosophy as
-   `lock-settings.sh`), so local edits to them do not survive a restart.
+   in its `files.list` from `files/` into `/home/<agent>/`, mode 0644/0755.
+   Later profiles overwrite earlier ones. The install itself (`mkdir -p`,
+   `rm -f`, `install`) runs with the agent's own privileges, not root's —
+   ownership is inherent, no chown needed. Source files are root-owned,
+   world-readable (0444/0555), so the agent can always read them; a symlink
+   the agent plants at a destination or parent segment can therefore only
+   redirect the write to somewhere the agent could already write, since there
+   is no elevated privilege left to abuse. Files are re-installed on every
+   boot and every apply: profile-shipped files are canonical (same philosophy
+   as `lock-settings.sh`), so local edits to them do not survive a restart.
 2. **Shell** — `chsh -s <shell>` for the agent user; last profile declaring a
    shell wins. Before switching, verify the path exists and is registered in
    `/etc/shells` (adding it if the package installed it) — a bad shell would
@@ -245,7 +247,10 @@ One new trust statement, stated to the user by `profile add`:
 Bounds on that trust:
 
 - Hooks never run as root; packages and shell are interpreted from validated
-  declarative fields, not scripts.
+  declarative fields, not scripts. File installs likewise run with the
+  agent's own privileges rather than root's, so a symlink planted at a
+  destination or parent directory only ever redirects a write the agent could
+  already make — there is no root-write TOCTOU for the agent to race.
 - Profiles cannot touch the locked Claude settings (validation rejects those
   paths).
 - Profiles live under `~/.config/code-vm/`, which `MountsExclude` already
