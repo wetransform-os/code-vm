@@ -34,7 +34,7 @@ func resolveWorkdir(c config.Config, cwd string) (string, error) {
 // runDefault is the root command's action: bring the VM up, verify the current
 // directory is shared, then run the command as the agent user at that path.
 func runDefault(ctx context.Context, args []string) error {
-	c, profiles, _, err := loadConfigWithProfiles()
+	c, profiles, cfgPath, err := loadConfigWithProfiles()
 	if err != nil {
 		return err
 	}
@@ -47,11 +47,17 @@ func runDefault(ctx context.Context, args []string) error {
 		return err
 	}
 	cl := clientFor(c)
-	if err := ensureRunning(ctx, cl, c, profiles); err != nil {
+	started, err := ensureRunning(ctx, cl, c, profiles)
+	if err != nil {
 		return err
 	}
 	if err := session.Setup(ctx, agentDeps(cl, c, profiles)); err != nil {
 		return fmt.Errorf("session setup: %w", err)
+	}
+	if started {
+		if err := pushRenderedTemplates(ctx, cl, c, profiles, cfgPath, os.Stdout); err != nil {
+			return err
+		}
 	}
 	return cl.Agent(ctx, workdir, agentCommand(args))
 }

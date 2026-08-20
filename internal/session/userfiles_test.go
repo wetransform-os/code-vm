@@ -32,6 +32,30 @@ func TestPushUserFileStagesAndRelays(t *testing.T) {
 	}
 }
 
+func TestPushUserFileRejectsUnsafeRel(t *testing.T) {
+	for _, rel := range []string{"../x", "/abs", ""} {
+		t.Run(rel, func(t *testing.T) {
+			r := &fakeRunner{}
+			d := testDeps(t, r)
+			err := PushUserFile(context.Background(), d, []byte("content"), rel, "0600")
+			if err == nil {
+				t.Fatalf("PushUserFile(%q) = nil error, want a rejection", rel)
+			}
+			if len(r.calls) != 0 {
+				t.Errorf("unsafe rel must not reach the guest, calls=%v", r.calls)
+			}
+		})
+	}
+}
+
+func TestPushUserFileAcceptsCleanRel(t *testing.T) {
+	r := &fakeRunner{}
+	d := testDeps(t, r)
+	if err := PushUserFile(context.Background(), d, []byte("content"), ".m2/settings.xml", "0600"); err != nil {
+		t.Fatalf("PushUserFile: %v", err)
+	}
+}
+
 func TestGitIdentityUsesUserFilePush(t *testing.T) {
 	r := &fakeRunner{}
 	d := testDeps(t, r)

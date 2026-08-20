@@ -3,7 +3,9 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 
@@ -101,36 +103,40 @@ func renderInstanceFile(c config.Config, profiles []profile.Profile) (string, er
 // from the rendered template; an existing one cannot be started with a
 // template argument (limactl refuses), so its stored config is replaced with
 // a freshly resolved render first.
-func ensureRunning(ctx context.Context, cl lima.Client, c config.Config, profiles []profile.Profile) error {
+//
+// started reports whether this call actually booted the VM (status was not
+// "Running" on entry). Callers use it to gate work that must run once per
+// boot but never on a plain invocation against an already-running VM.
+func ensureRunning(ctx context.Context, cl lima.Client, c config.Config, profiles []profile.Profile) (bool, error) {
 	if err := c.Validate(); err != nil {
-		return err
+		return false, err
 	}
 	status, err := cl.Status(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if status == "Running" {
-		return nil
+		return false, nil
 	}
 	path, err := renderInstanceFile(c, profiles)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer os.Remove(path)
 	if status == "" {
-		return cl.Start(ctx, path)
+		return true, cl.Start(ctx, path)
 	}
 	dir, err := cl.InstanceDir(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if dir == "" {
-		return fmt.Errorf("cannot locate the %s instance directory", lima.InstanceName)
+		return false, fmt.Errorf("cannot locate the %s instance directory", lima.InstanceName)
 	}
 	if err := cl.ResolveConfigInto(ctx, path, filepath.Join(dir, "lima.yaml")); err != nil {
-		return err
+		return false, err
 	}
-	return cl.StartExisting(ctx)
+	return true, cl.StartExisting(ctx)
 }
 
 func newStartCmd() *cobra.Command {
@@ -138,11 +144,67 @@ func newStartCmd() *cobra.Command {
 		Use:   "start",
 		Short: "Start the sandbox VM (idempotent)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			c, profiles, _, err := loadConfigWithProfiles()
+			c, profiles, cfgPath, err := loadConfigWithProfiles()
 			if err != nil {
 				return err
 			}
-			return ensureRunning(cmd.Context(), clientFor(c), c, profiles)
+			cl := clientFor(c)
+			if _, err := ensureRunning(cmd.Context(), cl, c, profiles); err != nil {
+				return err
+			}
+			return pushRenderedTemplates(cmd.Context(), cl, c, profiles, cfgPath, cmd.OutOrStdout())
 		},
 	}
+}
+
+// pushRenderedTemplates resolves secrets/vars and pushes rendered templates
+// into the agent home. Callers gate it to start, apply, and boot-causing
+// invocations only: resolution may invoke the user's secret manager
+// (pinentry), so it must never run on every command.
+func pushRenderedTemplates(ctx context.Context, cl lima.Client, c config.Config, profiles []profile.Profile, cfgPath string, out io.Writer) error {
+	secretsDecl := profile.DeclaredSecrets(profiles)
+	varsDecl := profile.DeclaredVars(profiles)
+	templated := false
+	for _, p := range profiles {
+		if len(p.Templates) > 0 {
+			templated = true
+		}
+	}
+	if !templated && len(secretsDecl) == 0 && len(varsDecl) == 0 {
+		return nil
+	}
+	sources, warnings, err := config.LoadSecrets(config.SecretsPathFor(cfgPath))
+	if err != nil {
+		return err
+	}
+	for _, w := range warnings {
+		fmt.Fprintf(out, "warning: %s\n", w)
+	}
+	secrets, err := profile.ResolveSecrets(ctx, secretsDecl, sources, hostCommand)
+	if err != nil {
+		return err
+	}
+	vars, err := profile.ResolveVars(varsDecl, c.Vars)
+	if err != nil {
+		return err
+	}
+	rendered := profile.RenderTemplates(profiles, secrets, vars)
+	d := agentDeps(cl, c, profiles)
+	for _, r := range rendered {
+		if err := session.PushUserFile(ctx, d, r.Content, r.Rel, "0600"); err != nil {
+			return err
+		}
+	}
+	if len(rendered) > 0 {
+		fmt.Fprintf(out, "Rendered %d template(s) into the sandbox.\n", len(rendered))
+	}
+	return nil
+}
+
+// hostCommand runs a secrets.yaml command through the user's shell on the
+// host. Dual contract for profile.CommandRunner consumers: stdout carries the
+// resolved value on success, while CombinedOutput's stderr is folded in so a
+// failure's error message has something readable to show the user.
+func hostCommand(ctx context.Context, command string) ([]byte, error) {
+	return exec.CommandContext(ctx, "sh", "-c", command).CombinedOutput()
 }

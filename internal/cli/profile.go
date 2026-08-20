@@ -286,7 +286,7 @@ func newProfileApplyCmd() *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			c, profiles, _, err := loadConfigWithProfiles()
+			c, profiles, cfgPath, err := loadConfigWithProfiles()
 			if err != nil {
 				return err
 			}
@@ -306,6 +306,11 @@ func newProfileApplyCmd() *cobra.Command {
 			// live before its hook needs them.
 			if err := session.ApplyAllowlist(ctx, d); err != nil {
 				return fmt.Errorf("apply allowlist: %w", err)
+			}
+			// Rendered templates land before hooks run: a hook may consume
+			// the configs a profile's own templates just produced.
+			if err := pushRenderedTemplates(ctx, cl, c, profiles, cfgPath, cmd.OutOrStdout()); err != nil {
+				return err
 			}
 			if err := session.ApplyProfiles(ctx, d); err != nil {
 				return fmt.Errorf("apply profiles: %w", err)
