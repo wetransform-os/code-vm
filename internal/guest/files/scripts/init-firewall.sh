@@ -90,10 +90,18 @@ install -d -m 0755 "$FRAGMENT_DIR"
 printf '# base fragment; host-config domains are added by code-vm\n' > "$FRAGMENT_DIR/00-base.conf"
 chmod 0444 "$FRAGMENT_DIR/00-base.conf"
 
-# Boot-time application of the host config's extraDomains. code-vm rewrites
-# this same path on later invocations; the name must stay in sync with
-# session.HostFragmentName.
-if [ -n "${EXTRA_ALLOWED_DOMAINS:-}" ]; then
+# Boot-time application of the host config's extraDomains. This only seeds
+# the file: once code-vm has written it for real (`code-vm allow`, `profile
+# apply`, or any invocation after extraDomains changes), that write is
+# authoritative and this script must not overwrite it. Without the
+# [ ! -f ... ] guard, a runtime revocation (removing a domain, deactivating a
+# profile) would only fix this file until the next firewall mode switch —
+# which reruns init-firewall.sh — brought the revoked domains straight back
+# from provision.env, which is only refreshed at VM start. At boot /run is
+# fresh tmpfs, so the file is always absent here and this always runs; on a
+# later mode switch it is present and this block is skipped entirely. The
+# name must stay in sync with session.HostFragmentName.
+if [ ! -f "$FRAGMENT_DIR/10-host-config.conf" ] && [ -n "${EXTRA_ALLOWED_DOMAINS:-}" ]; then
     read -ra EXTRA <<< "$EXTRA_ALLOWED_DOMAINS"
     if [ ${#EXTRA[@]} -gt 0 ]; then
         {

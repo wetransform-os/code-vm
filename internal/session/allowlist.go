@@ -67,26 +67,29 @@ func FragmentContent(domains []string) string {
 // workspace. Active profile manifests are part of that trusted host input
 // too — the cli layer merges their domains into d.AllowDomains before this
 // runs, so this function itself never needs to know profiles exist.
+//
+// Once this has written the fragment at all, it stays the authority — even
+// with an empty allowlist, a comment-only fragment is installed rather than
+// removed. init-firewall.sh seeds this same file from the host config at
+// boot, but only when it is absent, so that a firewall mode switch (which
+// reruns init-firewall.sh) does not resurrect domains this function already
+// revoked: absent means "no invocation has spoken since boot", present means
+// "this is the current truth", and only a fresh boot may go back to absent.
 func ApplyAllowlist(ctx context.Context, d Deps) error {
 	dst := fragmentDir + "/" + HostFragmentName
 	// Absent counts as a change. ReadFile keeps cat's "No such file" off the
 	// caller's terminal: this runs on every invocation, and the fragment is
-	// legitimately missing whenever no extra domains are configured.
+	// legitimately missing whenever no invocation has run since boot and no
+	// extra domains are configured.
 	current := d.Client.ReadFile(ctx, dst)
 
-	if len(d.AllowDomains) == 0 {
-		if len(current) == 0 {
-			return nil
-		}
-		// Every domain was removed from the config: drop the fragment so the
-		// guest stops allowing them, rather than leaving stale entries live.
-		if err := d.Client.Admin(ctx, []string{"rm", "-f", dst}); err != nil {
-			return err
-		}
-		return reloadSquid(ctx, d)
-	}
-
 	want := FragmentContent(d.AllowDomains)
+	if len(d.AllowDomains) == 0 && len(current) == 0 {
+		// Nothing configured and nothing installed yet: installing a
+		// comment-only fragment here would be harmless but would force a
+		// pointless Squid reload on every invocation of a domain-less setup.
+		return nil
+	}
 	if string(current) == want {
 		return nil
 	}
