@@ -162,6 +162,22 @@ func Load(profilesDir, name string) (Profile, error) {
 	if p.Templates, err = loadTemplates(dir); err != nil {
 		return Profile{}, fmt.Errorf("profile %s: %w", name, err)
 	}
+	// Validate that templates only reference declared secrets and vars.
+	for _, tpl := range p.Templates {
+		for _, ref := range FindRefs(tpl.Content) {
+			declared := false
+			if ref.Kind == "secret" {
+				_, declared = m.Secrets[ref.Name]
+			} else {
+				_, declared = m.Vars[ref.Name]
+			}
+			if !declared {
+				return Profile{}, fmt.Errorf(
+					"profile %s: templates/%s references ${%s:%s}, which the manifest does not declare",
+					name, tpl.Rel, ref.Kind, ref.Name)
+			}
+		}
+	}
 	// Check for collisions between files/ and templates/.
 	fileRels := map[string]bool{}
 	for _, f := range p.Files {
