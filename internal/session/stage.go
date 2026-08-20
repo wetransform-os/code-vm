@@ -30,38 +30,53 @@ func stagedPath() (string, error) {
 	return stageDir + "/stage-" + hex.EncodeToString(b[:]), nil
 }
 
-// installContent writes content into the guest at dst, owned by owner:group
-// with the given mode. The content travels through the admin user's staging
-// directory and the staged copy is removed afterwards, so it is never readable
-// at a path the agent can reach.
-func installContent(ctx context.Context, d Deps, content []byte, dst, mode, owner, group string) error {
+// stageFile writes content to a local temp file and copies it into the
+// guest's admin-only staging directory, returning the staged guest path.
+// Shared by installContent (root destinations) and PushUserFile (agent-home
+// destinations, which relay the staged copy onward instead of root-installing
+// it directly — see userfiles.go).
+func stageFile(ctx context.Context, d Deps, content []byte) (string, error) {
 	tmp, err := os.CreateTemp("", "code-vm-stage-*")
 	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
+		return "", fmt.Errorf("create temp file: %w", err)
 	}
 	defer os.Remove(tmp.Name())
 	if err := tmp.Chmod(0o600); err != nil {
 		tmp.Close()
-		return fmt.Errorf("chmod temp file: %w", err)
+		return "", fmt.Errorf("chmod temp file: %w", err)
 	}
 	if _, err := tmp.Write(content); err != nil {
 		tmp.Close()
-		return fmt.Errorf("write temp file: %w", err)
+		return "", fmt.Errorf("write temp file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp file: %w", err)
+		return "", fmt.Errorf("close temp file: %w", err)
 	}
 
 	staged, err := stagedPath()
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := d.Client.Admin(ctx, []string{
 		"install", "-d", "-m", "0700", "-o", adminUser, "-g", adminUser, stageDir,
 	}); err != nil {
-		return err
+		return "", err
 	}
 	if err := d.Client.Copy(ctx, tmp.Name(), staged); err != nil {
+		return "", err
+	}
+	return staged, nil
+}
+
+// installContent writes content into the guest at dst, owned by owner:group
+// with the given mode, as root. Only correct for root-owned destinations —
+// the allowlist fragment and profile tree — where there is no agent-owned
+// home path for a planted symlink to redirect the write into; for anything
+// landing in the agent's home, use PushUserFile instead so root never writes
+// there directly.
+func installContent(ctx context.Context, d Deps, content []byte, dst, mode, owner, group string) error {
+	staged, err := stageFile(ctx, d, content)
+	if err != nil {
 		return err
 	}
 	// -D creates root-owned parents for nested per-profile paths; a no-op for

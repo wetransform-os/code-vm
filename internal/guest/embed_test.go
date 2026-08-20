@@ -70,3 +70,19 @@ func TestApplyProfilesScriptIsDelivered(t *testing.T) {
 	}
 	t.Error("apply-profiles.sh is not delivered to the guest")
 }
+
+func TestInstallUserFileScriptIsDelivered(t *testing.T) {
+	files, err := DataFiles()
+	if err != nil {
+		t.Fatalf("DataFiles: %v", err)
+	}
+	for _, f := range files {
+		if f.Path == "/usr/local/lib/sandbox/install-user-file.sh" {
+			if f.Permissions != "0755" {
+				t.Errorf("install-user-file.sh permissions = %s, want 0755", f.Permissions)
+			}
+			return
+		}
+	}
+	t.Error("install-user-file.sh is not delivered to the guest")
+}
