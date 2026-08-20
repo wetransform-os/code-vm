@@ -151,15 +151,38 @@ func DeclaredVars(profiles []Profile) []DeclaredVar {
 // error. Injectable for tests.
 type CommandRunner func(ctx context.Context, command string) ([]byte, error)
 
+// yamlDoubleQuote renders s as a YAML double-quoted scalar, so the value that
+// lands in secrets.yaml when a user pastes the snippet is byte-for-byte s —
+// regardless of characters (#, leading -, ": ", …) that would otherwise be
+// reinterpreted as YAML syntax rather than literal command text. Callers only
+// ever pass isSingleLinePrintable strings (no control characters, no
+// newlines), so the only two characters a double-quoted YAML scalar requires
+// escaped are backslash and the double quote itself.
+func yamlDoubleQuote(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		if r == '\\' || r == '"' {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
 // MissingSecretSnippet renders the ready-to-paste secrets.yaml block for an
 // unmapped secret. The suggest hint is copied verbatim as the command —
 // display only until the user adopts it by saving this snippet themselves.
+// The command is emitted as a quoted YAML scalar: an unquoted suggest like
+// `printf '#token'` would otherwise have its trailing `'#token'` reparsed as
+// a YAML comment the moment the snippet is pasted into secrets.yaml.
 func MissingSecretSnippet(d DeclaredSecret) string {
 	cmd := d.Suggest
 	if cmd == "" {
 		cmd = "<command printing the value>"
 	}
-	return fmt.Sprintf("secrets:\n  %s:\n    command: %s\n", d.Name, cmd)
+	return fmt.Sprintf("secrets:\n  %s:\n    command: %s\n", d.Name, yamlDoubleQuote(cmd))
 }
 
 // ResolveSecrets resolves every declared secret from the user's sources. Each
