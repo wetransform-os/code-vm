@@ -61,3 +61,40 @@ func CoveringMount(mounts []string, path string) (string, bool) {
 func ProfilesDirFor(configPath string) string {
 	return filepath.Join(filepath.Dir(configPath), "profiles")
 }
+
+// CanonicalizeExisting resolves symlinks in the longest existing prefix of
+// path and rejoins the remainder, so guards compare real filesystem
+// locations rather than lexical spellings. A symlinked ancestor — a
+// profiles directory whose parent is itself an alias, a config path reached
+// through a symlinked directory — would otherwise defeat a plain prefix
+// comparison against the mount list: the alias never shares a lexical
+// prefix with the mount even though it resolves inside it.
+//
+// A path that does not exist yet (a profiles dir before the first
+// `profile add`, a default config that was never written) still
+// canonicalizes through its existing ancestors instead of erroring: only
+// the missing tail is left untouched. This is a pure function with no error
+// return; worst case, nothing on the path exists and it returns the cleaned
+// input.
+func CanonicalizeExisting(path string) string {
+	cleaned := filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
+		return resolved
+	}
+	dir := cleaned
+	var tail []string
+	for {
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Reached the root without finding an existing prefix; the root
+			// always resolves, so this is unreachable in practice, but stop
+			// rather than loop forever.
+			return cleaned
+		}
+		tail = append([]string{filepath.Base(dir)}, tail...)
+		dir = parent
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(append([]string{resolved}, tail...)...)
+		}
+	}
+}
