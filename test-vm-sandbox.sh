@@ -31,17 +31,22 @@ PROJECTS_ROOT=$(dirname "$(pwd)")
 # A linked worktree's `.git` file points at a gitdir under the *main*
 # checkout, which can sit outside the directory the line above covers (a
 # worktree nested a few levels down, e.g. under a `.claude/worktrees/<name>`
-# checkout used for isolated agent runs). When that gitdir is unreachable in
-# the guest, every git command run there fails with "not a git repository"
-# even though the working tree itself is mounted fine — including host git
-# identity seeding, which shells out to `git` in the guest. Widen the root to
-# also cover the common gitdir in that case; the common case (checkout root's
-# parent already covers its own .git) is untouched.
+# checkout used for isolated agent runs, or a worktree created entirely
+# elsewhere, e.g. `git worktree add /tmp/foo`). When that gitdir is
+# unreachable in the guest, every git command run there fails with "not a git
+# repository" even though the working tree itself is mounted fine —
+# including host git identity seeding, which shells out to `git` in the
+# guest. Widen coverage via an extra mount in that case rather than replacing
+# PROJECTS_ROOT with the gitdir's parent: PROJECTS_ROOT must keep covering
+# the checkout itself (that is what resolveWorkdir resolves `agent` calls
+# against), so the gitdir gets its own mount alongside it. The common case
+# (checkout root's parent already covers its own .git) is untouched.
 GIT_COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2> /dev/null || true)
+EXTRA_MOUNTS_LINE=""
 if [ -n "$GIT_COMMON_DIR" ]; then
     case "$GIT_COMMON_DIR" in
     "$PROJECTS_ROOT"/*) ;; # already covered
-    *) PROJECTS_ROOT=$(dirname "$GIT_COMMON_DIR") ;;
+    *) EXTRA_MOUNTS_LINE="extraMounts: [\"$(dirname "$GIT_COMMON_DIR")\"]" ;;
     esac
 fi
 
@@ -51,6 +56,7 @@ fi
 cat > "$CONFIG_FILE" << YAML
 instance: $INSTANCE
 projectsRoot: $PROJECTS_ROOT
+$EXTRA_MOUNTS_LINE
 cpus: 2
 memory: 6GiB
 disk: 40GiB
