@@ -380,6 +380,14 @@ func TestLoadRejectsInvalidDeclarations(t *testing.T) {
 		{"newline in secret description", "secrets:\n  tok:\n    description: |\n      line one\n      line two\n", nil, "description must be a single-line printable string"},
 		{"tab in var description", "vars:\n  url:\n    description: \"a\\tb\"\n", nil, "description must be a single-line printable string"},
 		{"newline in top-level description", "description: |\n  line one\n  line two\n", nil, "description must be a single-line printable string"},
+		// Trojan Source / CVE-2021-42574 class: bidi overrides and isolates
+		// reorder how surrounding text renders, so a suggest command can
+		// display one thing and paste another.
+		{"RLO (U+202E) in secret suggest", "secrets:\n  tok:\n    suggest: \"gopass show \\u202Efoo\"\n", nil, "suggest must be a single-line printable string"},
+		{"LRI (U+2066) in secret suggest", "secrets:\n  tok:\n    suggest: \"gopass show \\u2066foo\"\n", nil, "suggest must be a single-line printable string"},
+		{"ZWSP (U+200B) in var description", "vars:\n  url:\n    description: \"a\\u200Bb\"\n", nil, "description must be a single-line printable string"},
+		{"NEL (U+0085, C1) in top-level description", "description: \"a\\u0085b\"\n", nil, "description must be a single-line printable string"},
+		{"C1 CSI (U+009B) in secret description", "secrets:\n  tok:\n    description: \"a\\u009Bb\"\n", nil, "description must be a single-line printable string"},
 		{"template/file collision", "description: x\n",
 			map[string]string{"files/.npmrc": "a\n", "templates/.npmrc": "b\n"},
 			"both files/ and templates/"},
@@ -415,6 +423,55 @@ vars:
 `, nil)
 	if _, err := Load(dir, "p"); err != nil {
 		t.Fatalf("Load: %v", err)
+	}
+}
+
+// Legitimate non-ASCII letters (accented characters and the like) must not
+// be swept up by the Cc/C1/Cf rejection: only control and invisible-
+// formatting characters are disallowed, not all non-ASCII text.
+func TestLoadAcceptsAccentedDescription(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "p", "description: Café token\n", map[string]string{"files/a": "x\n"})
+	if _, err := Load(dir, "p"); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+}
+
+// TestSingleLinePrintable exercises isSingleLinePrintable directly, covering
+// the Trojan Source / CVE-2021-42574 class (bidi overrides and isolates),
+// zero-width formatting characters, C1 controls, and legitimate non-ASCII
+// text, alongside the original C0/DEL cases.
+func TestSingleLinePrintable(t *testing.T) {
+	reject := map[string]string{
+		"newline":          "a\nb",
+		"tab":              "a\tb",
+		"ESC (C0)":         "a\x1bb",
+		"DEL (0x7f)":       "a\x7fb",
+		"C1 CSI (U+009B)":  "a\u009bb",
+		"NEL (U+0085, C1)": "a\u0085b",
+		"RLO (U+202E)":     "a\u202eb",
+		"LRI (U+2066)":     "a\u2066b",
+		"ZWSP (U+200B)":    "a\u200bb",
+	}
+	for name, s := range reject {
+		t.Run("rejects "+name, func(t *testing.T) {
+			if isSingleLinePrintable(s) {
+				t.Errorf("isSingleLinePrintable(%q) = true, want false", s)
+			}
+		})
+	}
+	accept := []string{
+		"ordinary text with spaces",
+		"gopass show -o some/path with spaces",
+		"Caf\u00e9 token",
+		"\u65e5\u672c\u8a9e\u306e\u30c6\u30ad\u30b9\u30c8",
+	}
+	for _, s := range accept {
+		t.Run("accepts "+s, func(t *testing.T) {
+			if !isSingleLinePrintable(s) {
+				t.Errorf("isSingleLinePrintable(%q) = false, want true", s)
+			}
+		})
 	}
 }
 
