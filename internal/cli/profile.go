@@ -109,7 +109,8 @@ func newProfileAddCmd() *cobra.Command {
 			if err := runGit(cmd.Context(), cmd, "", "clone", url, dst); err != nil {
 				return err
 			}
-			if _, loadErr := profile.Load(dir, name); loadErr != nil {
+			loaded, loadErr := profile.Load(dir, name)
+			if loadErr != nil {
 				// A broken bundle must not linger: it would fail every
 				// loadConfigWithProfiles the moment someone activates it.
 				if rmErr := os.RemoveAll(dst); rmErr != nil {
@@ -120,6 +121,19 @@ func newProfileAddCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "Installed profile %s.\n\n%s\n\n", name, trustWarning)
 			fmt.Fprintf(out, "Activate it by adding to your config:\n\nprofiles:\n  - %s\n", name)
+			// Flagged separately from the generic trust warning above: a
+			// mapped secret's value becomes readable by the agent and by
+			// every other active profile's hook, not just this one, which
+			// is a sharper claim than "this profile is host-trusted".
+			if declared := profile.DeclaredSecrets([]profile.Profile{loaded}); len(declared) > 0 {
+				names := make([]string, len(declared))
+				for i, d := range declared {
+					names[i] = d.Name
+				}
+				fmt.Fprintf(out, "\nThis profile declares secrets: %s. Mapping them in secrets.yaml makes "+
+					"their values readable by the agent (and every active profile's hook).\n",
+					strings.Join(names, ", "))
+			}
 			return nil
 		},
 	}
@@ -229,6 +243,16 @@ func newProfileListCmd() *cobra.Command {
 					desc = err.Error()
 				} else {
 					desc = p.Manifest.Description
+					// Surfaced right in the list a user already reaches for,
+					// so a profile's secret needs are visible before they
+					// even get as far as `code-vm secrets`.
+					if declared := profile.DeclaredSecrets([]profile.Profile{p}); len(declared) > 0 {
+						names := make([]string, len(declared))
+						for i, d := range declared {
+							names[i] = d.Name
+						}
+						desc += fmt.Sprintf("  [secrets: %s]", strings.Join(names, ", "))
+					}
 				}
 				origin := gitOrigin(filepath.Join(dir, name))
 				fmt.Fprintf(out, "%-24s %-8s %-40s %s\n", name, state, origin, desc)
