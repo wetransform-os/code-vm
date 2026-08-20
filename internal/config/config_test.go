@@ -194,6 +194,80 @@ func TestValidateProfiles(t *testing.T) {
 	}
 }
 
+// A symlink outside every mount that resolves inside one must be refused
+// just like the real path would be: an agent that can write through the
+// alias can edit the config or profile sources the mount guard exists to
+// protect, and a lexical comparison alone would never notice.
+func TestMountsExcludeRejectsSymlinkedConfigParent(t *testing.T) {
+	base := t.TempDir()
+	real, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+
+	mount := filepath.Join(real, "mount")
+	if err := os.MkdirAll(mount, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	realConfigDir := filepath.Join(mount, "real-config-dir")
+	if err := os.MkdirAll(realConfigDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	alias := filepath.Join(real, "alias-config-dir")
+	if err := os.Symlink(realConfigDir, alias); err != nil {
+		t.Skipf("os.Symlink unsupported here: %v", err)
+	}
+
+	c := Default()
+	c.ProjectsRoot = mount
+
+	// The alias directory itself lies outside every mount lexically, so the
+	// unfixed guard would let this through even though it resolves inside
+	// the mount.
+	cfgPath := filepath.Join(alias, "config.yaml")
+	if err := c.MountsExclude(cfgPath); err == nil {
+		t.Errorf("MountsExclude(%q) = nil, want a refusal (alias resolves into %q)", cfgPath, mount)
+	}
+}
+
+// Same shape as above, but for the profiles-tree guard, and with the
+// profiles directory not yet created — the common case before the first
+// `profile add` — to confirm a nonexistent path under a symlinked existing
+// parent still canonicalizes rather than erroring or silently passing.
+func TestMountsExcludeTreeRejectsSymlinkedNonexistentProfilesDir(t *testing.T) {
+	base := t.TempDir()
+	real, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+
+	mount := filepath.Join(real, "mount")
+	if err := os.MkdirAll(mount, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// The config directory itself exists (EvalSymlinks needs a real target
+	// to resolve through), but the profiles subdirectory under it does not:
+	// that is the common case before the first `profile add`.
+	realConfigDir := filepath.Join(mount, "real-config-dir")
+	if err := os.MkdirAll(realConfigDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	alias := filepath.Join(real, "alias-config-dir")
+	if err := os.Symlink(realConfigDir, alias); err != nil {
+		t.Skipf("os.Symlink unsupported here: %v", err)
+	}
+
+	c := Default()
+	c.ProjectsRoot = mount
+
+	profilesDir := filepath.Join(alias, "profiles")
+	if err := c.MountsExcludeTree(profilesDir); err == nil {
+		t.Errorf("MountsExcludeTree(%q) = nil, want a refusal (alias resolves into %q)", profilesDir, mount)
+	}
+}
+
 func TestMountsExcludeTree(t *testing.T) {
 	dir := "/home/st/.config/code-vm/profiles"
 	tests := []struct {

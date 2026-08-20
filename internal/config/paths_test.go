@@ -83,3 +83,43 @@ func TestProfilesDirFor(t *testing.T) {
 		t.Errorf("ProfilesDirFor = %q", got)
 	}
 }
+
+func TestCanonicalizeExisting(t *testing.T) {
+	dir := t.TempDir()
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", dir, err)
+	}
+
+	realTarget := filepath.Join(real, "real")
+	if err := os.MkdirAll(realTarget, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	alias := filepath.Join(real, "alias")
+	if err := os.Symlink(realTarget, alias); err != nil {
+		t.Skipf("os.Symlink unsupported here: %v", err)
+	}
+
+	t.Run("existing symlink resolves", func(t *testing.T) {
+		got := CanonicalizeExisting(alias)
+		if got != realTarget {
+			t.Errorf("CanonicalizeExisting(%q) = %q, want %q", alias, got, realTarget)
+		}
+	})
+
+	t.Run("nonexistent tail under a symlinked existing parent", func(t *testing.T) {
+		want := filepath.Join(realTarget, "nested", "config.yaml")
+		got := CanonicalizeExisting(filepath.Join(alias, "nested", "config.yaml"))
+		if got != want {
+			t.Errorf("CanonicalizeExisting = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("wholly nonexistent path still resolves through the root", func(t *testing.T) {
+		want := filepath.Join(real, "does", "not", "exist")
+		got := CanonicalizeExisting(want)
+		if got != want {
+			t.Errorf("CanonicalizeExisting = %q, want %q", got, want)
+		}
+	})
+}

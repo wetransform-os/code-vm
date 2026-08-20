@@ -172,9 +172,15 @@ func ValidateDomain(d string) error {
 // inside the guest. The host config is the only trusted input to the egress
 // allowlist, which holds only while the agent cannot write it: sharing $HOME
 // or ~/.config would hand the agent control of its own firewall.
+//
+// Both sides are canonicalized before comparison: a lexical prefix check
+// would miss a mount, or the config path itself, reached through a symlink —
+// an alias directory outside every mount that resolves inside one would
+// otherwise sail through untouched.
 func (c Config) MountsExclude(path string) error {
-	p := filepath.Clean(path)
-	if m, ok := CoveringMount(c.Mounts(), p); ok {
+	p := CanonicalizeExisting(path)
+	mounts := canonicalizeAll(c.Mounts())
+	if m, ok := CoveringMount(mounts, p); ok {
 		return fmt.Errorf(
 			"shared directory %s would expose the code-vm config (%s) to the agent, "+
 				"which could then widen its own egress allowlist; narrow projectsRoot or the extra mount",
@@ -188,16 +194,18 @@ func (c Config) MountsExclude(path string) error {
 // below it exposes part of it. MountsExclude cannot cover the second case —
 // it guards a single file path — and profiles feed the egress allowlist, so
 // an agent-writable profile source would be an allowlist the agent controls.
+//
+// Both sides are canonicalized before comparison; see MountsExclude for why.
 func (c Config) MountsExcludeTree(dir string) error {
-	d := filepath.Clean(dir)
-	if m, ok := CoveringMount(c.Mounts(), d); ok {
+	d := CanonicalizeExisting(dir)
+	mounts := canonicalizeAll(c.Mounts())
+	if m, ok := CoveringMount(mounts, d); ok {
 		return fmt.Errorf(
 			"shared directory %s would expose the code-vm profiles (%s) to the agent, "+
 				"which could then widen its own egress allowlist; narrow projectsRoot or the extra mount",
 			m, d)
 	}
-	for _, m := range c.Mounts() {
-		m = filepath.Clean(m)
+	for _, m := range mounts {
 		// m == d is already covered above: CoveringMount treats equality as
 		// covering, so a mount exactly at d never reaches this loop.
 		if strings.HasPrefix(m, d+string(filepath.Separator)) {
@@ -207,6 +215,17 @@ func (c Config) MountsExcludeTree(dir string) error {
 		}
 	}
 	return nil
+}
+
+// canonicalizeAll applies CanonicalizeExisting to every mount for comparison
+// purposes. The configured spellings in Mounts() itself are left untouched —
+// rendering the Lima template must keep what the user wrote.
+func canonicalizeAll(mounts []string) []string {
+	out := make([]string, len(mounts))
+	for i, m := range mounts {
+		out[i] = CanonicalizeExisting(m)
+	}
+	return out
 }
 
 // Mounts returns every host directory shared into the guest, projects root

@@ -62,10 +62,16 @@ func loadConfig() (config.Config, string, error) {
 	// absolute mounts. A relative --config would silently defeat both guards
 	// — they'd compare "./config.yaml" against an absolute mount and never
 	// match — rather than refuse a config that exposes itself to the agent.
+	// filepath.Abs only makes the path absolute; it does not resolve
+	// symlinks, so a config reached through a symlinked directory could still
+	// alias into a mount while comparing unequal to it lexically.
+	// CanonicalizeExisting closes that gap and tolerates a config file that
+	// does not exist yet (the default path, before the first `code-vm` run).
 	path, err := filepath.Abs(path)
 	if err != nil {
 		return config.Config{}, path, fmt.Errorf("resolve config path: %w", err)
 	}
+	path = config.CanonicalizeExisting(path)
 	c, err := config.Load(path)
 	if err != nil {
 		return config.Config{}, path, fmt.Errorf("load config: %w", err)
