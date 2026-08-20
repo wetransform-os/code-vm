@@ -8,12 +8,15 @@ import (
 	"github.com/wetransform/code-vm/internal/config"
 )
 
-func TestAgentCommandDefaultsToLoginShell(t *testing.T) {
-	if got := agentCommand(nil); !reflect.DeepEqual(got, []string{"bash", "-l"}) {
-		t.Errorf("agentCommand(nil) = %v, want [bash -l]", got)
+// A bare invocation must pass NO command: naming a shell host-side would
+// override sandbox-exec's login-shell fallback, which is the only place the
+// agent's chsh'd shell (e.g. a profile setting fish) is known.
+func TestAgentCommandLeavesShellChoiceToTheGuest(t *testing.T) {
+	if got := agentCommand(nil); len(got) != 0 {
+		t.Errorf("agentCommand(nil) = %v, want empty", got)
 	}
-	if got := agentCommand([]string{}); !reflect.DeepEqual(got, []string{"bash", "-l"}) {
-		t.Errorf("agentCommand([]) = %v, want [bash -l]", got)
+	if got := agentCommand([]string{}); len(got) != 0 {
+		t.Errorf("agentCommand([]) = %v, want empty", got)
 	}
 }
 
