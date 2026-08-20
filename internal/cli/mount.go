@@ -53,6 +53,19 @@ func newMountCmd() *cobra.Command {
 				fmt.Fprintf(out, "%s is already shared; nothing to do.\n", args[0])
 				return nil
 			}
+			// Re-run the same guards loadConfig runs, but against the
+			// UPDATED config: loadConfig only ever saw the config as it was
+			// before this new mount, so a mount that targets the config file
+			// or the profiles tree (e.g. `code-vm mount
+			// ~/.config/code-vm/profiles`) would otherwise be saved and
+			// applied, exposing the egress allowlist to the agent until the
+			// next invocation caught it.
+			if err := updated.MountsExclude(path); err != nil {
+				return err
+			}
+			if err := updated.MountsExcludeTree(config.ProfilesDirFor(path)); err != nil {
+				return err
+			}
 			if err := updated.Save(path); err != nil {
 				return err
 			}

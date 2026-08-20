@@ -3,6 +3,7 @@ package cli
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -55,6 +56,15 @@ func loadConfig() (config.Config, string, error) {
 			return config.Config{}, "", err
 		}
 		path = p
+	}
+	// Canonicalize before Load: every downstream consumer of path (Save,
+	// ProfilesDirFor, and both mount guards below) compares it against
+	// absolute mounts. A relative --config would silently defeat both guards
+	// — they'd compare "./config.yaml" against an absolute mount and never
+	// match — rather than refuse a config that exposes itself to the agent.
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return config.Config{}, path, fmt.Errorf("resolve config path: %w", err)
 	}
 	c, err := config.Load(path)
 	if err != nil {

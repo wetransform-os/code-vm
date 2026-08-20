@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wetransform/code-vm/internal/config"
@@ -62,5 +64,49 @@ func TestAddMountRejectsMissingOrNonDirectory(t *testing.T) {
 	}
 	if _, _, err := addMount(c, file); err == nil {
 		t.Error("expected an error for a path that is not a directory")
+	}
+}
+
+// The mount command builds an updated config directly (addMount) rather than
+// going through loadConfig, so it never ran MountsExclude/MountsExcludeTree
+// against what it was about to save — `code-vm mount ~/.config/code-vm/profiles`
+// would happily mount the profiles source into the guest and only fail on the
+// *next* invocation. This pins the fix: the same two guards loadConfig runs
+// must run again on the updated config before it is saved or the VM touched.
+func TestMountRefusesProfilesDirectoryWithoutSavingOrRestarting(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	profilesRoot := filepath.Join(dir, "profiles")
+	if err := os.MkdirAll(profilesRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "config.yaml")
+	before, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := installFakeClient(t, "Running")
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"mount", profilesRoot})
+	err = root.Execute()
+	if err == nil {
+		t.Fatalf("expected mount to refuse the profiles directory; output:\n%s", out.String())
+	}
+	if !strings.Contains(err.Error(), "expose the code-vm profiles") {
+		t.Errorf("error = %v, want a profiles-guard refusal", err)
+	}
+
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("config file was modified despite the refused mount:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	if len(r.calls) != 0 {
+		t.Errorf("expected no guest interaction before the guard runs, got %v", r.calls)
 	}
 }
