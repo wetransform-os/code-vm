@@ -51,9 +51,13 @@ func runDefault(ctx context.Context, args []string) error {
 	// Resolve BEFORE booting, but only when a boot is actually about to
 	// happen: an already-running VM keeps today's fast path exactly as it
 	// is — no resolution, no pinentry — since this is the per-invocation hot
-	// path, not an explicit command like `start`. ensureRunning re-checks
-	// status itself; the duplicate check here is the price of knowing
-	// up front whether resolution must run first.
+	// path, not an explicit command like `start`. Status is observed exactly
+	// once and that single value both gates resolution and is handed to
+	// ensureRunningWithStatus to decide whether to boot — a second, separate
+	// Status call here would reopen a TOCTOU: the VM could stop between the
+	// two checks, so the outer check sees "Running" (skipping resolution)
+	// while a re-check inside ensureRunning boots it anyway, silently
+	// skipping template rendering for that boot.
 	status, err := cl.Status(ctx)
 	if err != nil {
 		return err
@@ -65,7 +69,7 @@ func runDefault(ctx context.Context, args []string) error {
 			return err
 		}
 	}
-	started, err := ensureRunning(ctx, cl, c, profiles)
+	started, err := ensureRunningWithStatus(ctx, cl, c, profiles, status)
 	if err != nil {
 		return err
 	}
