@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/wetransform/code-vm/internal/config"
+	"github.com/wetransform/code-vm/internal/profile"
 	"github.com/wetransform/code-vm/internal/session"
 )
 
@@ -47,6 +48,23 @@ func runDefault(ctx context.Context, args []string) error {
 		return err
 	}
 	cl := clientFor(c)
+	// Resolve BEFORE booting, but only when a boot is actually about to
+	// happen: an already-running VM keeps today's fast path exactly as it
+	// is — no resolution, no pinentry — since this is the per-invocation hot
+	// path, not an explicit command like `start`. ensureRunning re-checks
+	// status itself; the duplicate check here is the price of knowing
+	// up front whether resolution must run first.
+	status, err := cl.Status(ctx)
+	if err != nil {
+		return err
+	}
+	var rendered []profile.Rendered
+	if status != "Running" {
+		rendered, err = resolveRendered(ctx, c, profiles, cfgPath, os.Stdout)
+		if err != nil {
+			return err
+		}
+	}
 	started, err := ensureRunning(ctx, cl, c, profiles)
 	if err != nil {
 		return err
@@ -55,7 +73,7 @@ func runDefault(ctx context.Context, args []string) error {
 		return fmt.Errorf("session setup: %w", err)
 	}
 	if started {
-		if err := pushRenderedTemplates(ctx, cl, c, profiles, cfgPath, os.Stdout); err != nil {
+		if err := pushRendered(ctx, cl, c, profiles, rendered, os.Stdout); err != nil {
 			return err
 		}
 	}

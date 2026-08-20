@@ -149,11 +149,22 @@ func newStartCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cl := clientFor(c)
-			if _, err := ensureRunning(cmd.Context(), cl, c, profiles); err != nil {
+			ctx := cmd.Context()
+			// Resolve (and render) before touching the guest at all: resolution
+			// needs nothing from the guest, so an unmapped secret must abort
+			// before ensureRunning boots anything. Unlike shell's fast path,
+			// start always resolves — it is an explicit command, not the
+			// per-invocation hot path, so resolving even against an
+			// already-running VM is the right cost/behavior tradeoff.
+			rendered, err := resolveRendered(ctx, c, profiles, cfgPath, cmd.OutOrStdout())
+			if err != nil {
 				return err
 			}
-			return pushRenderedTemplates(cmd.Context(), cl, c, profiles, cfgPath, cmd.OutOrStdout())
+			cl := clientFor(c)
+			if _, err := ensureRunning(ctx, cl, c, profiles); err != nil {
+				return err
+			}
+			return pushRendered(ctx, cl, c, profiles, rendered, cmd.OutOrStdout())
 		},
 	}
 }
