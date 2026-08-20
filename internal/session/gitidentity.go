@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"strconv"
 	"strings"
 )
 
@@ -47,9 +46,8 @@ func ApplyGitIdentity(ctx context.Context, d Deps) error {
 		return nil
 	}
 
-	// Numeric ids, not names: the guest group carrying AgentGID may be a stock
-	// group with a different name (see Deps).
-	dst := "/home/" + d.AgentUser + "/.gitconfig"
-	return installContent(ctx, d, []byte(GitConfigContent(name, email)), dst, "0644",
-		strconv.Itoa(d.AgentUID), strconv.Itoa(d.AgentGID))
+	// Delivered through the relay (install-user-file.sh), not a root install:
+	// the file lands in the agent's home, so the final write must run with
+	// agent privileges rather than root's (see userfiles.go).
+	return PushUserFile(ctx, d, []byte(GitConfigContent(name, email)), ".gitconfig", "0644")
 }
