@@ -108,12 +108,26 @@ func renderInstanceFile(c config.Config, profiles []profile.Profile) (string, er
 // started reports whether this call actually booted the VM (status was not
 // "Running" on entry). Callers use it to gate work that must run once per
 // boot but never on a plain invocation against an already-running VM.
+//
+// This is a thin wrapper around ensureRunningWithStatus for callers that have
+// not already observed the status themselves. A caller that must make another
+// decision (e.g. whether to resolve templates) keyed on the same "is it
+// running" fact should call cl.Status itself and pass the result to
+// ensureRunningWithStatus directly — see runDefault in shell.go — rather than
+// go through this wrapper, which would re-query the status and reopen the
+// TOCTOU where the VM stops between the two checks.
 func ensureRunning(ctx context.Context, cl lima.Client, c config.Config, profiles []profile.Profile) (bool, error) {
-	if err := c.Validate(); err != nil {
-		return false, err
-	}
 	status, err := cl.Status(ctx)
 	if err != nil {
+		return false, err
+	}
+	return ensureRunningWithStatus(ctx, cl, c, profiles, status)
+}
+
+// ensureRunningWithStatus is ensureRunning's body, taking an already-observed
+// status instead of querying it again itself.
+func ensureRunningWithStatus(ctx context.Context, cl lima.Client, c config.Config, profiles []profile.Profile, status string) (bool, error) {
+	if err := c.Validate(); err != nil {
 		return false, err
 	}
 	if status == "Running" {

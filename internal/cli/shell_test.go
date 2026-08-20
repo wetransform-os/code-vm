@@ -110,6 +110,59 @@ func TestRunDefaultRunningFastPathSkipsResolution(t *testing.T) {
 	}
 }
 
+// countStatusCalls reports how many times the runner was asked for `limactl
+// list ...` (the status query behind cl.Status).
+func countStatusCalls(calls [][]string) int {
+	n := 0
+	for _, c := range calls {
+		if len(c) > 0 && c[0] == "list" {
+			n++
+		}
+	}
+	return n
+}
+
+// runDefault must decide "is it running" exactly once: the same observation
+// both gates resolution and is handed to ensureRunningWithStatus to decide
+// whether to boot. A second, independent Status call here would reopen the
+// TOCTOU this fix closes — the VM stopping between two separate checks could
+// leave resolution skipped (outer check saw Running) while ensureRunning
+// boots anyway, silently dropping template rendering for that boot.
+func TestRunDefaultQueriesStatusExactlyOnce(t *testing.T) {
+	root := NewRootCmd()
+	setupShellFixture(t)
+
+	r := installFakeClient(t, "Running")
+	root.SetArgs([]string{})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("bare invocation against a running VM = %v", err)
+	}
+	if n := countStatusCalls(r.calls); n != 1 {
+		t.Errorf("expected exactly one status query, got %d, calls=%v", n, r.calls)
+	}
+}
+
+// A Stopped VM is the boot path: resolution must happen before ensureRunning
+// boots it, keyed off the very same status observation used to decide the
+// boot itself (single-status-decision — see the comment on ensureRunning).
+func TestRunDefaultStoppedResolvesBeforeBoot(t *testing.T) {
+	root := NewRootCmd()
+	setupShellFixture(t)
+
+	r := installFakeClient(t, "Stopped")
+	root.SetArgs([]string{})
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "gopass show -o t") {
+		t.Fatalf("bare invocation against a stopped VM = %v, want an unmapped-secret error with the suggest snippet", err)
+	}
+	if r.started() {
+		t.Errorf("VM must not be started before resolution succeeds, calls=%v", r.calls)
+	}
+	if n := countStatusCalls(r.calls); n != 1 {
+		t.Errorf("expected exactly one status query, got %d, calls=%v", n, r.calls)
+	}
+}
+
 func TestResolveWorkdirRejectsUncoveredPathWithActionableError(t *testing.T) {
 	c := config.Default()
 	c.ProjectsRoot = "/home/st/projects"
