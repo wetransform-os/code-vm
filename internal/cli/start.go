@@ -158,11 +158,13 @@ func newStartCmd() *cobra.Command {
 	}
 }
 
-// pushRenderedTemplates resolves secrets/vars and pushes rendered templates
-// into the agent home. Callers gate it to start, apply, and boot-causing
-// invocations only: resolution may invoke the user's secret manager
-// (pinentry), so it must never run on every command.
-func pushRenderedTemplates(ctx context.Context, cl lima.Client, c config.Config, profiles []profile.Profile, cfgPath string, out io.Writer) error {
+// resolveRendered resolves secrets/vars and renders every active profile's
+// templates, without touching the guest at all. Split out from
+// pushRenderedTemplates so callers that must not mutate any guest state
+// before resolution can fail (profile apply: PushProfiles/ApplyAllowlist
+// stage a new profile tree and make its domains live, and must not run
+// ahead of an unmapped-secret failure) can resolve first and push later.
+func resolveRendered(ctx context.Context, c config.Config, profiles []profile.Profile, cfgPath string, out io.Writer) ([]profile.Rendered, error) {
 	secretsDecl := profile.DeclaredSecrets(profiles)
 	varsDecl := profile.DeclaredVars(profiles)
 	templated := false
@@ -172,24 +174,30 @@ func pushRenderedTemplates(ctx context.Context, cl lima.Client, c config.Config,
 		}
 	}
 	if !templated && len(secretsDecl) == 0 && len(varsDecl) == 0 {
-		return nil
+		return nil, nil
 	}
 	sources, warnings, err := config.LoadSecrets(config.SecretsPathFor(cfgPath))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, w := range warnings {
 		fmt.Fprintf(out, "warning: %s\n", w)
 	}
 	secrets, err := profile.ResolveSecrets(ctx, secretsDecl, sources, hostCommand)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	vars, err := profile.ResolveVars(varsDecl, c.Vars)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	rendered := profile.RenderTemplates(profiles, secrets, vars)
+	return profile.RenderTemplates(profiles, secrets, vars), nil
+}
+
+// pushRendered pushes already-resolved rendered templates into the agent
+// home. Callers that already called resolveRendered use this directly, so
+// resolution never runs twice.
+func pushRendered(ctx context.Context, cl lima.Client, c config.Config, profiles []profile.Profile, rendered []profile.Rendered, out io.Writer) error {
 	d := agentDeps(cl, c, profiles)
 	for _, r := range rendered {
 		if err := session.PushUserFile(ctx, d, r.Content, r.Rel, "0600"); err != nil {
@@ -200,6 +208,18 @@ func pushRenderedTemplates(ctx context.Context, cl lima.Client, c config.Config,
 		fmt.Fprintf(out, "Rendered %d template(s) into the sandbox.\n", len(rendered))
 	}
 	return nil
+}
+
+// pushRenderedTemplates resolves secrets/vars and pushes rendered templates
+// into the agent home. Callers gate it to start, apply, and boot-causing
+// invocations only: resolution may invoke the user's secret manager
+// (pinentry), so it must never run on every command.
+func pushRenderedTemplates(ctx context.Context, cl lima.Client, c config.Config, profiles []profile.Profile, cfgPath string, out io.Writer) error {
+	rendered, err := resolveRendered(ctx, c, profiles, cfgPath, out)
+	if err != nil {
+		return err
+	}
+	return pushRendered(ctx, cl, c, profiles, rendered, out)
 }
 
 // hostCommand runs a secrets.yaml command through the user's shell on the

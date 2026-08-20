@@ -322,6 +322,15 @@ func newProfileApplyCmd() *cobra.Command {
 			if status != "Running" {
 				return fmt.Errorf("the VM is not running; profiles apply automatically at boot — start it with `code-vm start`")
 			}
+			// Resolve (and render) before touching the guest at all:
+			// resolution needs nothing from the guest, and PushProfiles/
+			// ApplyAllowlist below stage a new profile tree and make its
+			// domains live. An unmapped-secret failure must abort before
+			// any of that happens, not after.
+			rendered, err := resolveRendered(ctx, c, profiles, cfgPath, cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
 			d := agentDeps(cl, c, profiles)
 			if err := session.PushProfiles(ctx, d, profile.GuestFiles(profiles)); err != nil {
 				return fmt.Errorf("push profiles: %w", err)
@@ -332,8 +341,9 @@ func newProfileApplyCmd() *cobra.Command {
 				return fmt.Errorf("apply allowlist: %w", err)
 			}
 			// Rendered templates land before hooks run: a hook may consume
-			// the configs a profile's own templates just produced.
-			if err := pushRenderedTemplates(ctx, cl, c, profiles, cfgPath, cmd.OutOrStdout()); err != nil {
+			// the configs a profile's own templates just produced. Already
+			// resolved above, so this only pushes — no second resolution.
+			if err := pushRendered(ctx, cl, c, profiles, rendered, cmd.OutOrStdout()); err != nil {
 				return err
 			}
 			if err := session.ApplyProfiles(ctx, d); err != nil {
