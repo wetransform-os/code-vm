@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -47,6 +48,55 @@ func TestInstallContentStagesOutsideAgentReach(t *testing.T) {
 	}
 	if !strings.Contains(all, "rm -f "+guestPath) {
 		t.Errorf("staged copy must be removed after install, calls:\n%s", all)
+	}
+}
+
+// copyFailingRunner fails every `limactl copy` invocation while otherwise
+// behaving like fakeRunner, so tests can exercise stageFile's cleanup path
+// without a real guest.
+type copyFailingRunner struct {
+	fakeRunner
+}
+
+func (r *copyFailingRunner) Run(ctx context.Context, args ...string) error {
+	if err := r.fakeRunner.Run(ctx, args...); err != nil {
+		return err
+	}
+	if len(args) > 0 && args[0] == "copy" {
+		return errors.New("simulated copy failure")
+	}
+	return nil
+}
+
+// A Copy failure can leave a partial file behind at the staged guest path.
+// stageFile must attempt a best-effort removal of it before returning the
+// error, rather than leaving rendered credential bytes sitting in the
+// admin-only staging dir — the same posture PushUserFile's deferred cleanup
+// takes on its own failure paths.
+func TestStageFileCleansUpPartialFileOnCopyFailure(t *testing.T) {
+	r := &copyFailingRunner{}
+	d := testDeps(t, r)
+	_, err := stageFile(context.Background(), d, []byte("secret\n"))
+	if err == nil {
+		t.Fatal("expected stageFile to return the Copy error")
+	}
+	if !strings.Contains(err.Error(), "simulated copy failure") {
+		t.Errorf("stageFile error = %v, want it to wrap the Copy failure", err)
+	}
+
+	var stagedGuestPath string
+	for _, call := range r.calls {
+		if len(call) >= 2 && call[0] == "copy" {
+			// copy <local> <instance>:<guestPath>
+			dst := call[2]
+			stagedGuestPath = strings.TrimPrefix(dst, "code-sandbox:")
+		}
+	}
+	if stagedGuestPath == "" {
+		t.Fatal("expected a copy call attempting to stage the file")
+	}
+	if !r.ranAny("rm -f " + stagedGuestPath) {
+		t.Errorf("expected a best-effort cleanup of the partial staged file %q, calls=%v", stagedGuestPath, r.calls)
 	}
 }
 

@@ -63,7 +63,13 @@ func stageFile(ctx context.Context, d Deps, content []byte) (string, error) {
 		return "", err
 	}
 	if err := d.Client.Copy(ctx, tmp.Name(), staged); err != nil {
-		return "", err
+		// Copy can leave a partial file at staged on failure or cancellation.
+		// Every other stageFile caller only learns of the guest path once
+		// Copy succeeds, so this is the only chance to clean it up — best
+		// effort, on an independent context, the same as PushUserFile's
+		// deferred cleanup (see cleanupStaged in userfiles.go).
+		cleanupStaged(d, staged)
+		return "", fmt.Errorf("copy staged file: %w", err)
 	}
 	return staged, nil
 }
