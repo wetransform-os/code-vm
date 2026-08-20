@@ -135,7 +135,7 @@ func TestLoadRejectsInvalidProfiles(t *testing.T) {
 			map[string]string{"files/.claude/settings.local.json": "{}"}, "locked Claude settings"},
 		{"file path with spaces", "description: x\n",
 			map[string]string{"files/has space": "x"}, "file path"},
-		{"files is a regular file, not a directory", "description: x\n", nil, "files must be a directory"},
+		{"files is a regular file, not a directory", "description: x\n", nil, "files must be a real directory"},
 		{"empty file content", "description: x\n",
 			map[string]string{"files/blank": ""}, "must not be blank"},
 		{"newline-only file content", "description: x\n",
@@ -172,6 +172,61 @@ func TestLoadRejectsSymlinkInFiles(t *testing.T) {
 	}
 	if _, err := Load(dir, "p"); err == nil || !strings.Contains(err.Error(), "regular files") {
 		t.Errorf("Load error = %v, want symlink rejection", err)
+	}
+}
+
+// A symlinked profile directory could point anywhere on the host, including
+// back into an agent-writable mounted workspace: an agent could then rewrite
+// the "profile" a later host invocation trusts.
+func TestLoadRejectsSymlinkProfileDir(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	writeProfile(t, dir, "real", "description: x\npackages: [git]\n", nil)
+	if err := os.Symlink(real, filepath.Join(dir, "p")); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	if _, err := Load(dir, "p"); err == nil || !strings.Contains(err.Error(), "symlinks are rejected") {
+		t.Errorf("Load error = %v, want symlinked profile dir rejection", err)
+	}
+}
+
+// A symlinked profile.yaml could be swapped out between install-time
+// validation and a later load, feeding agent-authored manifest content
+// (domains, packages, shell) back into the trusted host path.
+func TestLoadRejectsSymlinkManifest(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "manifest.yaml")
+	if err := os.WriteFile(target, []byte("description: x\npackages: [git]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "p"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "p", "profile.yaml")); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	if _, err := Load(dir, "p"); err == nil || !strings.Contains(err.Error(), "symlinks are rejected") {
+		t.Errorf("Load error = %v, want symlinked manifest rejection", err)
+	}
+}
+
+// A symlinked files/ root would let WalkDir walk wherever it points,
+// including a directory an agent controls.
+func TestLoadRejectsSymlinkFilesRoot(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "elsewhere")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "a"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeProfile(t, dir, "p", "description: x\n", nil)
+	if err := os.Symlink(target, filepath.Join(dir, "p", "files")); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	if _, err := Load(dir, "p"); err == nil || !strings.Contains(err.Error(), "symlinks are rejected") {
+		t.Errorf("Load error = %v, want symlinked files root rejection", err)
 	}
 }
 
