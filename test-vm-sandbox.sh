@@ -625,11 +625,11 @@ assert_ok "a mapping change plus apply updates the rendered template" \
 yq -i '.secrets.extra-unmapped = {"suggest": "gopass show -o nope"}' "$PROFILE_FIXTURE/profile.yaml"
 # shellcheck disable=SC2016 # placeholder, substituted host-side at apply
 printf 'x=${secret:extra-unmapped}\n' > "$PROFILE_FIXTURE/templates/.config/extra.conf"
-UNMAPPED_OUT=$("${CODE_VM_ARGS[@]}" profile apply 2>&1)
-if echo "$UNMAPPED_OUT" | grep -q 'gopass show -o nope'; then
-    pass "unmapped secret fails apply with the ready-to-paste snippet"
+UNMAPPED_OUT=$("${CODE_VM_ARGS[@]}" profile apply 2>&1); UNMAPPED_RC=$?
+if [ "$UNMAPPED_RC" -ne 0 ] && echo "$UNMAPPED_OUT" | grep -q 'gopass show -o nope'; then
+    pass "unmapped secret fails apply (nonzero) with the ready-to-paste snippet"
 else
-    fail "unmapped secret fails apply with the ready-to-paste snippet (got: $UNMAPPED_OUT)"
+    fail "unmapped secret fails apply with the ready-to-paste snippet (rc=$UNMAPPED_RC, got: $UNMAPPED_OUT)"
 fi
 # Restore the fixture to the mapped-only state for the deactivation steps.
 rm -f "$PROFILE_FIXTURE/templates/.config/extra.conf"
