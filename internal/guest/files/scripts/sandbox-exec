@@ -29,9 +29,16 @@ if [ "${1:-}" = "--workdir" ] && [ $# -ge 2 ]; then
     shift 2
 fi
 
+# The agent's login shell, straight from the passwd database. This exec path
+# never goes through login(1), so chsh (e.g. a profile setting fish) would be
+# invisible here unless read explicitly — both for the interactive fallback
+# and for $SHELL, which subprocesses consult.
+login_shell=$(getent passwd "$AGENT_USER" | cut -d: -f7)
+[ -x "$login_shell" ] || login_shell=/bin/bash
+
 cmd=("$@")
 if [ ${#cmd[@]} -eq 0 ]; then
-    cmd=(bash -l)
+    cmd=("$login_shell" -l)
 fi
 
 # Already unprivileged (e.g. invoked directly by the agent): just exec.
@@ -49,6 +56,7 @@ if [ -n "$workdir" ]; then
         HOME="/home/${AGENT_USER}" \
         USER="$AGENT_USER" \
         LOGNAME="$AGENT_USER" \
+        SHELL="$login_shell" \
         XDG_RUNTIME_DIR="/run/user/${AGENT_UID}" \
         PATH="/home/${AGENT_USER}/.local/bin:/home/${AGENT_USER}/.opencode/bin:/home/${AGENT_USER}/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
         bash -c 'cd "$1" || exit 1; shift; exec "$@"' _ "$workdir" "${cmd[@]}"
@@ -59,6 +67,7 @@ exec setpriv --reuid "$AGENT_UID" --regid "$AGENT_GID" --init-groups \
     HOME="/home/${AGENT_USER}" \
     USER="$AGENT_USER" \
     LOGNAME="$AGENT_USER" \
+    SHELL="$login_shell" \
     XDG_RUNTIME_DIR="/run/user/${AGENT_UID}" \
     PATH="/home/${AGENT_USER}/.local/bin:/home/${AGENT_USER}/.opencode/bin:/home/${AGENT_USER}/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
     "${cmd[@]}"
