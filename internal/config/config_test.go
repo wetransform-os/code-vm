@@ -292,3 +292,16 @@ func TestMountsExcludeTree(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateVars(t *testing.T) {
+	c := Default()
+	c.ProjectsRoot = "/home/st/projects"
+	c.Vars = map[string]string{"artifactory-url": "https://x"}
+	if err := c.Validate(); err != nil {
+		t.Errorf("Validate: %v", err)
+	}
+	c.Vars = map[string]string{"has space": "v"}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "vars") {
+		t.Errorf("Validate = %v, want vars key rejection", err)
+	}
+}

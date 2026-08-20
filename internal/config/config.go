@@ -52,6 +52,9 @@ type Config struct {
 	// wins. Each name must exist under the profiles directory next to this
 	// config file; that is checked when profiles are loaded, not here.
 	Profiles []string `yaml:"profiles,omitempty"`
+	// Vars are non-secret literal values available to profile templates as
+	// ${var:name}. Secrets never belong here — they go in secrets.yaml.
+	Vars map[string]string `yaml:"vars,omitempty"`
 }
 
 // Default returns the built-in configuration. Disk is large because Docker
@@ -156,6 +159,11 @@ func (c Config) Validate() error {
 			return fmt.Errorf("profiles[%d]: %q is listed twice", i, p)
 		}
 		seenProfiles[p] = true
+	}
+	for name := range c.Vars {
+		if !instanceRe.MatchString(name) {
+			return fmt.Errorf("vars: key %q must be a name like %q", name, "artifactory-url")
+		}
 	}
 	return nil
 }
