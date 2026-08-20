@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,19 +136,24 @@ func TestLoadRejectsInvalidProfiles(t *testing.T) {
 		{"file path with spaces", "description: x\n",
 			map[string]string{"files/has space": "x"}, "file path"},
 		{"files is a regular file, not a directory", "description: x\n", nil, "files must be a directory"},
+		{"empty file content", "description: x\n",
+			map[string]string{"files/blank": ""}, "must not be blank"},
+		{"newline-only file content", "description: x\n",
+			map[string]string{"files/blank": "\n"}, "must not be blank"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			name := "p"
-			if tt.name == "bad name is rejected before disk IO" {
+			switch tt.name {
+			case "bad name is rejected before disk IO":
 				name = "no/slashes"
-			} else if tt.name == "files is a regular file, not a directory" {
+			case "files is a regular file, not a directory":
 				writeProfile(t, dir, name, tt.manifest, nil)
 				if err := os.WriteFile(filepath.Join(dir, name, "files"), []byte("not a dir"), 0o644); err != nil {
 					t.Fatal(err)
 				}
-			} else {
+			default:
 				writeProfile(t, dir, name, tt.manifest, tt.files)
 			}
 			_, err := Load(dir, name)
@@ -184,6 +190,25 @@ func TestLoadRejectsSymlinkHook(t *testing.T) {
 	}
 	if _, err := Load(dir, "p"); err == nil || !strings.Contains(err.Error(), "regular file") {
 		t.Errorf("Load error = %v, want symlink hook rejection", err)
+	}
+}
+
+// A hook that is empty or contains only blank lines renders a YAML literal
+// block scalar with no non-blank line at all. That is valid per the YAML
+// spec and parses fine with gopkg.in/yaml.v3, but was confirmed (against
+// limactl 2.2.0's `limactl validate`) to fail outright regardless of
+// chomping indicator — "could not find multi-line content" / "mapping value
+// is not allowed in this context". Rather than ship a profile that boots
+// the guest with a broken instance file, this is rejected at load time.
+func TestLoadRejectsBlankHookContent(t *testing.T) {
+	for _, content := range []string{"", "\n", "\n\n"} {
+		t.Run(fmt.Sprintf("%q", content), func(t *testing.T) {
+			dir := t.TempDir()
+			writeProfile(t, dir, "p", "description: x\nhook: hook.sh\n", map[string]string{"hook.sh": content})
+			if _, err := Load(dir, "p"); err == nil || !strings.Contains(err.Error(), "must not be blank") {
+				t.Errorf("Load error = %v, want blank-hook rejection", err)
+			}
+		})
 	}
 }
 

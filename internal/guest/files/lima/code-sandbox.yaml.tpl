@@ -80,7 +80,15 @@ provision:
   # (guestBlockContent in template.go) additionally guards a leading tab
   # specifically: see its comment for the limactl-side bug that survives even
   # this indicator.
-  content: |2
+  #
+  # The chomping indicator after "2" is dynamic (see chomp in template.go):
+  # "-" (strip) for content with no trailing newline, "" (clip, the default)
+  # for exactly one, "+" (keep) for more than one — paired with indent
+  # reproducing the extra ones as trailing blank lines. Without this, every
+  # embedded file was forced through exactly one trailing newline regardless
+  # of its own, which the staged-copy path (`profile apply`) reproduces
+  # byte-exact, so the two delivery paths would otherwise diverge.
+  content: |2{{chomp .Content}}
 {{indent 4 (escapeData .Content)}}
 {{- end}}
 - mode: system

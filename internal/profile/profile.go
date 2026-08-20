@@ -45,6 +45,18 @@ var relPathRe = regexp.MustCompile(`^[a-zA-Z0-9._/-]+$`)
 // profile directory.
 var hookRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 
+// isBlank reports whether content is empty or consists solely of newline
+// characters: rendered as a Lima "content: |" literal block scalar, such
+// content has no non-blank line at all. That is valid per the YAML spec and
+// parses fine with gopkg.in/yaml.v3, but was confirmed against limactl
+// 2.2.0's own parser (`limactl validate`) to fail outright regardless of
+// chomping indicator — "could not find multi-line content" / "mapping value
+// is not allowed in this context" — which would only surface at `code-vm
+// start`, against a real VM. Rejected here instead, at load time.
+func isBlank(content []byte) bool {
+	return len(bytes.Trim(content, "\n")) == 0
+}
+
 // forbiddenFiles are agent-home paths a profile may never ship: the
 // security-critical files lock-settings.sh owns and locks.
 var forbiddenFiles = map[string]bool{
@@ -129,6 +141,9 @@ func Load(profilesDir, name string) (Profile, error) {
 		b, err := os.ReadFile(hookPath)
 		if err != nil {
 			return Profile{}, fmt.Errorf("profile %s: read hook: %w", name, err)
+		}
+		if isBlank(b) {
+			return Profile{}, fmt.Errorf("profile %s: hook must not be blank (empty or newline-only content cannot be embedded)", name)
 		}
 		p.Hook = b
 	}
@@ -226,6 +241,9 @@ func loadFiles(dir string) ([]File, error) {
 		b, err := os.ReadFile(p)
 		if err != nil {
 			return err
+		}
+		if isBlank(b) {
+			return fmt.Errorf("files/%s: must not be blank (empty or newline-only content cannot be embedded)", rel)
 		}
 		info, err := d.Info()
 		if err != nil {
