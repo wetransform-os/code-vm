@@ -2,8 +2,45 @@ package session
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 )
+
+// erroringRunner fails the Run call whose args join contains match; every
+// other call is delegated to the embedded fakeRunner so it still records
+// calls and behaves normally.
+type erroringRunner struct {
+	fakeRunner
+	match string
+	err   error
+}
+
+func (r *erroringRunner) Run(ctx context.Context, args ...string) error {
+	if strings.Contains(strings.Join(args, " "), r.match) {
+		r.calls = append(r.calls, args)
+		return r.err
+	}
+	return r.fakeRunner.Run(ctx, args...)
+}
+
+// A VM booted from a pre-this-feature code-vm binary lacks
+// install-user-file.sh, so PushUserFile's Admin call fails with an opaque
+// exec error. The wrapped message must point at the fix: restarting the VM.
+func TestPushUserFileWrapsAdminFailureWithUpgradeHint(t *testing.T) {
+	r := &erroringRunner{match: "install-user-file.sh", err: errors.New("exec format error")}
+	d := testDeps(t, r)
+	err := PushUserFile(context.Background(), d, []byte("content"), ".gitconfig", "0644")
+	if err == nil {
+		t.Fatal("PushUserFile: expected an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "code-vm stop") || !strings.Contains(err.Error(), "code-vm start") {
+		t.Errorf("PushUserFile error = %v, want it to mention `code-vm stop && code-vm start`", err)
+	}
+	if !errors.Is(err, r.err) {
+		t.Errorf("PushUserFile error = %v, want it to wrap the underlying error (%%w)", err)
+	}
+}
 
 func TestPushUserFileStagesAndRelays(t *testing.T) {
 	r := &fakeRunner{}
@@ -33,7 +70,7 @@ func TestPushUserFileStagesAndRelays(t *testing.T) {
 }
 
 func TestPushUserFileRejectsUnsafeRel(t *testing.T) {
-	for _, rel := range []string{"../x", "/abs", ""} {
+	for _, rel := range []string{"../x", "/abs", "", "has space", "semi;colon", "dollar$sign"} {
 		t.Run(rel, func(t *testing.T) {
 			r := &fakeRunner{}
 			d := testDeps(t, r)

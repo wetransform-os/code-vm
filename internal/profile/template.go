@@ -145,8 +145,10 @@ func DeclaredVars(profiles []Profile) []DeclaredVar {
 	return out
 }
 
-// CommandRunner executes a user-authored secrets.yaml command on the host and
-// returns its combined output. Injectable for tests.
+// CommandRunner executes a user-authored secrets.yaml command on the host.
+// On success the returned bytes are stdout — the value — with stderr chatter
+// excluded; on failure the returned bytes are stderr, as display text for the
+// error. Injectable for tests.
 type CommandRunner func(ctx context.Context, command string) ([]byte, error)
 
 // MissingSecretSnippet renders the ready-to-paste secrets.yaml block for an
