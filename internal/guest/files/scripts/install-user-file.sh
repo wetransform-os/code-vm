@@ -20,16 +20,31 @@ set -euo pipefail
 src="$1"
 rel="$2"
 mode="$3"
+
+# Defense in depth: the host already validates rel before it ever reaches
+# here, but this relay is root, so a path that escapes the agent home is
+# rejected again on this end too.
+case "$rel" in
+    /* | */../* | */.. | ../* | ..)
+        echo "install-user-file.sh: rejected unsafe rel path: $rel" >&2
+        exit 1
+        ;;
+esac
+
 AGENT_HOME="/home/${AGENT_USER}"
 
 DROP_DIR=/run/sandbox/user-files
 install -d -m 0750 -o root -g "$AGENT_GID" "$DROP_DIR"
 drop=$(mktemp "$DROP_DIR/file-XXXXXXXX")
-install -m 0640 -o root -g "$AGENT_GID" "$src" "$drop"
-rm -f "$src"
 
+# Trapped immediately after mktemp creates the placeholder: if the install
+# below fails, cleanup still removes it instead of leaving an empty drop on
+# tmpfs.
 cleanup() { rm -f "$drop"; }
 trap cleanup EXIT
+
+install -m 0640 -o root -g "$AGENT_GID" "$src" "$drop"
+rm -f "$src"
 
 # Same hardened pattern as the profile applier's agent runner: no login
 # shell, system PATH only, BASH_ENV/ENV cleared. Positional args, not string

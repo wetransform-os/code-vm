@@ -226,6 +226,9 @@ func pushRenderedTemplates(ctx context.Context, cl lima.Client, c config.Config,
 // host. The value is stdout ONLY — stderr chatter from a succeeding command
 // (gpg warnings, deprecation notices) must never leak into a credential.
 // On failure, the captured stderr is returned as display text for the error.
+// Neither stdin nor a tty is wired up: a command that needs interactive
+// pinentry (rather than an already-cached agent/keyring) will hang or fail
+// rather than prompt.
 func hostCommand(ctx context.Context, command string) ([]byte, error) {
 	out, err := exec.CommandContext(ctx, "sh", "-c", command).Output()
 	if err != nil {

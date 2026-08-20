@@ -323,6 +323,8 @@ make anything execute. Values come only from the user's own mapping:
   `command` runs on the host through the shell; its stdout, with one
   trailing newline stripped, is the value. `value:` is also accepted for a
   literal — a footgun for a real credential, fine for a low-value token.
+  (Neither stdin nor a tty is wired up, so a command that needs interactive
+  pinentry rather than an already-cached agent/keyring will hang or fail.)
 
 - **`vars:` in `config.yaml`** — the same non-secret literal map as any
   other config key, for things like `artifactory-url: https://...`.
