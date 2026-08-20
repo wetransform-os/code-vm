@@ -644,6 +644,67 @@ func TestProfileApplyPushesAndRuns(t *testing.T) {
 	}
 }
 
+// Resolution (LoadSecrets/ResolveSecrets/ResolveVars) needs nothing from the
+// guest, so an unmapped secret must fail apply before PushProfiles stages a
+// new profile tree or ApplyAllowlist makes its domains live — otherwise a
+// failed apply leaves a half-applied profile (new tree, live domains, no
+// templates) whose hooks still run on the next boot.
+func TestProfileApplyFailsBeforeTouchingGuestOnUnmappedSecret(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	pdir := filepath.Join(dir, "profiles", "p")
+	if err := os.MkdirAll(filepath.Join(pdir, "templates"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pdir, "profile.yaml"),
+		[]byte("secrets:\n  tok:\n    suggest: gopass show -o t\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pdir, "templates", ".npmrc"), []byte("${secret:tok}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := configPath
+	b, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, append(b, []byte("profiles:\n  - p\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// No secrets.yaml is written at all: "tok" is unmapped.
+
+	r := installFakeClient(t, "Running")
+	root.SetArgs([]string{"profile", "apply"})
+	err = root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "gopass show -o t") {
+		t.Fatalf("profile apply = %v, want an unmapped-secret error with the suggest snippet", err)
+	}
+	// "status" is the only guest call resolution's own precondition check
+	// makes; nothing that mutates guest state (push, rm -rf, allowlist) may
+	// have run.
+	for _, unwanted := range []string{
+		"rm -rf /usr/local/share/sandbox-profiles",
+		"install -d -m 0755 /usr/local/share/sandbox-profiles",
+		"squid -k reconfigure",
+		"apply-profiles.sh",
+	} {
+		if ranAny(r.calls, unwanted) {
+			t.Errorf("guest call %q must not happen before resolution succeeds, calls=%v", unwanted, r.calls)
+		}
+	}
+	if copies := func() int {
+		n := 0
+		for _, c := range r.calls {
+			if len(c) > 0 && c[0] == "copy" {
+				n++
+			}
+		}
+		return n
+	}(); copies != 0 {
+		t.Errorf("no file may be staged into the guest before resolution succeeds, copies=%d calls=%v", copies, r.calls)
+	}
+}
+
 func TestProfileApplyRequiresRunningVM(t *testing.T) {
 	root := NewRootCmd()
 	withScratchConfig(t)
