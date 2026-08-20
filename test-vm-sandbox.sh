@@ -529,7 +529,21 @@ cat > "$PROFILE_FIXTURE/hook.sh" << 'SH'
 set -eu
 echo hook-ran > "$HOME/.profile-hook-ran"
 SH
+# The original heredoc above declares neither key, so appending is safe here;
+# the extra-unmapped secret added later must use `yq -i` instead, since a
+# second top-level `secrets:` key would be a YAML duplicate-key parse error.
+printf 'secrets:\n  test-token:\n    description: integration fixture token\nvars:\n  test-url: {}\n' \
+    >> "$PROFILE_FIXTURE/profile.yaml"
+mkdir -p "$PROFILE_FIXTURE/templates/.config"
+# shellcheck disable=SC2016 # placeholders, substituted host-side at apply
+printf 'token=${secret:test-token}\nurl=${var:test-url}\nkeep=${env.HOME}\n' \
+    > "$PROFILE_FIXTURE/templates/.config/fixture.conf"
 yq -i '.profiles = ["test-profile"]' "$CONFIG_FILE"
+
+# Map the declared secret/var to inputs, in the scratch config tree.
+printf 'secrets:\n  test-token:\n    value: sekrit-value\n' > "$TEST_CONFIG_DIR/secrets.yaml"
+chmod 0600 "$TEST_CONFIG_DIR/secrets.yaml"
+yq -i '.vars = {"test-url": "https://fixture.example"}' "$CONFIG_FILE"
 
 if "${CODE_VM_ARGS[@]}" profile apply > /dev/null 2>&1; then
     pass "profile apply succeeds"
@@ -581,6 +595,47 @@ assert_ok "profile domain is allowed live" \
 assert_fails "agent cannot write the guest profile tree" \
     agent bash -c 'echo x > /usr/local/share/sandbox-profiles/manifest.env'
 
+RENDERED="/home/$AGENT_USER/.config/fixture.conf"
+if adm cat "$RENDERED" 2> /dev/null | grep -q 'token=sekrit-value'; then
+    pass "template secret is substituted in the guest"
+else
+    fail "template secret is substituted in the guest"
+fi
+assert_ok "template var is substituted" \
+    adm grep -q 'url=https://fixture.example' "$RENDERED"
+# shellcheck disable=SC2016 # literal placeholder text, must NOT expand here
+assert_ok "unrelated placeholders pass through" \
+    adm grep -qF 'keep=${env.HOME}' "$RENDERED"
+if [ "$(adm stat -c '%u %a' "$RENDERED")" = "$(id -u) 600" ]; then
+    pass "rendered template is agent-owned 0600"
+else
+    fail "rendered template is agent-owned 0600 (got $(adm stat -c '%u %a' "$RENDERED"))"
+fi
+
+# Rotation: change the mapped value, re-apply, and the rendered file updates.
+printf 'secrets:\n  test-token:\n    value: rotated-value\n' > "$TEST_CONFIG_DIR/secrets.yaml"
+"${CODE_VM_ARGS[@]}" profile apply > /dev/null 2>&1
+assert_ok "a mapping change plus apply updates the rendered template" \
+    adm grep -q 'token=rotated-value' "$RENDERED"
+
+# A declared-but-unmapped secret must fail apply with the snippet, before
+# anything reaches the guest. yq, not printf-append: a second top-level
+# `secrets:` key would be a YAML duplicate-key parse error, a different
+# failure than the one under test.
+yq -i '.secrets.extra-unmapped = {"suggest": "gopass show -o nope"}' "$PROFILE_FIXTURE/profile.yaml"
+# shellcheck disable=SC2016 # placeholder, substituted host-side at apply
+printf 'x=${secret:extra-unmapped}\n' > "$PROFILE_FIXTURE/templates/.config/extra.conf"
+UNMAPPED_OUT=$("${CODE_VM_ARGS[@]}" profile apply 2>&1)
+if echo "$UNMAPPED_OUT" | grep -q 'gopass show -o nope'; then
+    pass "unmapped secret fails apply with the ready-to-paste snippet"
+else
+    fail "unmapped secret fails apply with the ready-to-paste snippet (got: $UNMAPPED_OUT)"
+fi
+# Restore the fixture to the mapped-only state for the deactivation steps.
+rm -f "$PROFILE_FIXTURE/templates/.config/extra.conf"
+yq -i 'del(.secrets.extra-unmapped)' "$PROFILE_FIXTURE/profile.yaml"
+"${CODE_VM_ARGS[@]}" profile apply > /dev/null 2>&1
+
 # Deactivate: the guest tree is cleared and the domain revoked. Installed
 # package and shell deliberately survive (documented non-goal).
 mv "$CONFIG_FILE.profiles-backup" "$CONFIG_FILE"
@@ -590,6 +645,7 @@ assert_fails "deactivated profile's guest tree is gone" \
 assert_fails "deactivated profile's domain is revoked" \
     agent curl -fsS -o /dev/null --max-time 20 https://example.org
 adm rm -f "/home/$AGENT_USER/.profile-hook-ran" > /dev/null 2>&1
+adm rm -f "$RENDERED" > /dev/null 2>&1  # cleanup with the other fixture artifacts
 rm -rf "$TEST_CONFIG_DIR/profiles"
 
 echo ""

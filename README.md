@@ -71,6 +71,7 @@ code-vm                          # interactive shell
 | `code-vm recreate` | Delete and rebuild the guest from scratch |
 | `code-vm proxy-log [all\|denied\|allowed\|follow]` | Read the Squid access log |
 | `code-vm allow [domain...]` | Add domains to the allowlist and apply them live |
+| `code-vm secrets` | List secrets/vars the active profiles declare, mapped or not |
 | `code-vm doctor` | Check host prerequisites |
 
 ## Configuration
@@ -248,6 +249,95 @@ Notes:
 - Deactivating a profile stops applying it, but does not uninstall packages,
   revert the shell, or delete files already in the home. `code-vm recreate`
   is the clean-slate path.
+
+### Credentials
+
+Profiles can also ship **templates**: files rendered from placeholders
+before delivery, so a team can share the whole shape of a credentialed
+config (proxies, mirrors, server IDs) while each user supplies only their
+own credential sources.
+
+```
+wetf-maven/
+  profile.yaml
+  templates/                 # home-mirroring tree, rendered before delivery
+    .m2/settings.xml
+```
+
+`profile.yaml` gains two more sections:
+
+```yaml
+secrets:
+  wetf-repo-user:
+    description: Artifactory user for wetf-snapshots/releases
+    suggest: gopass show -o wetf/artifactory-user   # inert hint, never executed
+  wetf-repo-password:
+    suggest: gopass show -o wetf/artifactory-password
+vars:
+  artifactory-url:
+    description: Base URL of the Artifactory instance
+```
+
+A template uses `${secret:name}` and `${var:name}` placeholders; anything
+else — Maven properties, `${env.FOO}` — passes through untouched. A shipped
+`.m2/settings.xml` typically writes the static parts (proxies, mirrors)
+verbatim and reserves placeholders only for the credentialed bits:
+
+```xml
+<settings>
+  <servers>
+    <server>
+      <id>wetf-snapshots</id>
+      <username>${secret:wetf-repo-user}</username>
+      <password>${secret:wetf-repo-password}</password>
+    </server>
+  </servers>
+  <proxies>...</proxies>   <!-- shipped as-is, no placeholders needed -->
+  <mirrors>...</mirrors>
+</settings>
+```
+
+`description` and `suggest` are inert display strings: a profile can never
+make anything execute. Values come only from the user's own mapping:
+
+- **`~/.config/code-vm/secrets.yaml`** — 0600, host-trusted like
+  `config.yaml`, never distributed with the profile:
+
+  ```yaml
+  secrets:
+    wetf-repo-user:
+      command: gopass show -o wetf/artifactory-user
+    wetf-repo-password:
+      command: gopass show -o wetf/artifactory-password
+  ```
+
+  `command` runs on the host through the shell; its stdout, with one
+  trailing newline stripped, is the value. `value:` is also accepted for a
+  literal — a footgun for a real credential, fine for a low-value token.
+
+- **`vars:` in `config.yaml`** — the same non-secret literal map as any
+  other config key, for things like `artifactory-url: https://...`.
+
+Notes:
+
+- Mapping a secret makes its value readable by the agent, and therefore by
+  every active profile's hook, not just the one that declared it. Install
+  profiles from sources you trust with the secrets you map, and map only
+  sandbox-appropriate credentials.
+- A declared-but-unmapped secret or var fails `code-vm start` /
+  `profile apply` with the exact snippet to paste into `secrets.yaml` or
+  `config.yaml`; nothing partial reaches the guest. `code-vm secrets` lists
+  every secret and var the active profiles declare, mapped or not, without
+  ever printing a value.
+- Resolution happens at `code-vm start`, `code-vm profile apply`, and any
+  invocation that has to boot the VM — never per invocation against an
+  already-running VM, so there is no per-command secret-manager prompt.
+- On a cold boot, hooks run as part of the guest's own boot sequence,
+  before `code-vm start` pushes the first rendered template: a hook that
+  reads a profile-shipped template must tolerate it not existing yet.
+- Rotation: rotate the credential at its source (gopass, pass, op, …), then
+  either restart the VM or run `code-vm profile apply` — code-vm
+  re-resolves and re-pushes every time, never caching an old value.
 
 ## Security model
 
