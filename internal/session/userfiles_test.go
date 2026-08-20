@@ -42,6 +42,21 @@ func TestPushUserFileWrapsAdminFailureWithUpgradeHint(t *testing.T) {
 	}
 }
 
+// When the relay Admin call fails — the supported old-VM/missing-script
+// case — the staged copy must still be cleaned up: otherwise a rendered
+// credential is left sitting in the admin-only staging dir indefinitely.
+func TestPushUserFileCleansUpStagedFileOnRelayFailure(t *testing.T) {
+	r := &erroringRunner{match: "install-user-file.sh", err: errors.New("exec format error")}
+	d := testDeps(t, r)
+	err := PushUserFile(context.Background(), d, []byte("content"), ".gitconfig", "0644")
+	if err == nil {
+		t.Fatal("PushUserFile: expected an error, got nil")
+	}
+	if !r.ranAny("rm -f") {
+		t.Errorf("expected a best-effort staged-file cleanup after the relay failed, calls=%v", r.calls)
+	}
+}
+
 func TestPushUserFileStagesAndRelays(t *testing.T) {
 	r := &fakeRunner{}
 	d := testDeps(t, r)
