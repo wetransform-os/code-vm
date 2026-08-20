@@ -80,20 +80,22 @@ func newMountCmd() *cobra.Command {
 				fmt.Fprintln(out, "VM is not running; the new mount applies on next start.")
 				return nil
 			}
+			// Resolve (and render) before stopping the VM at all: resolution
+			// needs nothing from the guest, so an unmapped secret must abort
+			// before the running VM is even stopped, let alone left stopped
+			// on a failed restart.
+			rendered, err := resolveRendered(cmd.Context(), updated, profiles, path, out)
+			if err != nil {
+				return err
+			}
 			fmt.Fprintln(out, "Restarting the VM to apply the new mount...")
 			if err := cl.Stop(cmd.Context()); err != nil {
 				return err
 			}
-			started, err := ensureRunning(cmd.Context(), cl, updated, profiles)
-			if err != nil {
+			if _, err := ensureRunning(cmd.Context(), cl, updated, profiles); err != nil {
 				return err
 			}
-			if started {
-				if err := pushRenderedTemplates(cmd.Context(), cl, updated, profiles, path, out); err != nil {
-					return err
-				}
-			}
-			return nil
+			return pushRendered(cmd.Context(), cl, updated, profiles, rendered, out)
 		},
 	}
 }

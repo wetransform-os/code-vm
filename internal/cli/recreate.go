@@ -32,20 +32,22 @@ func newRecreateCmd() *cobra.Command {
 					return fmt.Errorf("aborted")
 				}
 			}
+			// Resolve (and render) before deleting anything: resolution needs
+			// nothing from the guest, and an unmapped-secret failure must
+			// never destroy the user's VM — critical here, since Delete is
+			// irreversible (guest disk, Claude auth, Docker image cache).
+			rendered, err := resolveRendered(cmd.Context(), c, profiles, cfgPath, cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
 			cl := clientFor(c)
 			if err := cl.Delete(cmd.Context()); err != nil {
 				return err
 			}
-			started, err := ensureRunning(cmd.Context(), cl, c, profiles)
-			if err != nil {
+			if _, err := ensureRunning(cmd.Context(), cl, c, profiles); err != nil {
 				return err
 			}
-			if started {
-				if err := pushRenderedTemplates(cmd.Context(), cl, c, profiles, cfgPath, cmd.OutOrStdout()); err != nil {
-					return err
-				}
-			}
-			return nil
+			return pushRendered(cmd.Context(), cl, c, profiles, rendered, cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
