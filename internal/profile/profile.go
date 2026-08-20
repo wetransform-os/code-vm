@@ -106,7 +106,27 @@ func Load(profilesDir, name string) (Profile, error) {
 		return Profile{}, err
 	}
 	dir := filepath.Join(profilesDir, name)
-	data, err := os.ReadFile(filepath.Join(dir, "profile.yaml"))
+	// Lstat, not Stat: a symlinked profile directory could point anywhere on
+	// the host (including back into an agent-writable mounted workspace),
+	// letting a sandboxed agent rewrite what the next host invocation treats
+	// as trusted profile input. No symlinks are permitted anywhere in a
+	// bundle; this is the directory-level half of that rule.
+	if fi, err := os.Lstat(dir); err != nil {
+		return Profile{}, fmt.Errorf("profile %s: read manifest: %w", name, err)
+	} else if !fi.IsDir() {
+		return Profile{}, fmt.Errorf("profile %s: profile directory must be a real directory (symlinks are rejected)", name)
+	}
+	manifestPath := filepath.Join(dir, "profile.yaml")
+	// Lstat before ReadFile for the same reason: a symlinked manifest could
+	// be swapped between install-time validation and a later load, feeding
+	// agent-authored domains, packages, or shell settings back into the
+	// trusted host path.
+	if fi, err := os.Lstat(manifestPath); err != nil {
+		return Profile{}, fmt.Errorf("profile %s: read manifest: %w", name, err)
+	} else if !fi.Mode().IsRegular() {
+		return Profile{}, fmt.Errorf("profile %s: profile.yaml must be a regular file (symlinks are rejected)", name)
+	}
+	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return Profile{}, fmt.Errorf("profile %s: read manifest: %w", name, err)
 	}
@@ -197,19 +217,23 @@ func validateManifest(m Manifest) error {
 // delivery.
 func loadFiles(dir string) ([]File, error) {
 	root := filepath.Join(dir, "files")
-	info, err := os.Stat(root)
+	// Lstat, not Stat: a symlinked files/ root would let WalkDir walk
+	// wherever it points, including a directory an agent controls.
+	info, err := os.Lstat(root)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if !info.IsDir() {
-		// A non-directory "files" makes WalkDir yield a single entry with rel
-		// ".", which passes every check below (it is a regular file, it
-		// matches relPathRe, it is not forbidden) and would otherwise be
-		// silently installed as-is.
-		return nil, fmt.Errorf("files must be a directory")
+	if !info.Mode().IsDir() {
+		// Folds in the former "files is a regular file" case: a non-directory
+		// "files" makes WalkDir yield a single entry with rel ".", which
+		// passes every check below (it is a regular file, it matches
+		// relPathRe, it is not forbidden) and would otherwise be silently
+		// installed as-is. A symlinked "files" (to a directory or otherwise)
+		// is rejected the same way, by the same message.
+		return nil, fmt.Errorf("files must be a real directory (symlinks are rejected)")
 	}
 	var out []File
 	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
