@@ -374,6 +374,30 @@ func testProfiles() []profile.Profile {
 	}}
 }
 
+// Regression: a hook-only profile (no files) once rendered an EMPTY
+// files.list, and an empty literal block scalar is invalid YAML — `code-vm
+// start` failed at limactl's template parse. Files-less profiles must render
+// no files.list at all, and the resulting template must stay parseable.
+func TestRenderFilesLessProfileIsValidYAML(t *testing.T) {
+	profs := []profile.Profile{{
+		Name:     "hook-only",
+		Manifest: profile.Manifest{Hook: "hook.sh", Packages: []string{"git"}},
+		Hook:     []byte("#!/bin/bash\necho hi\n"),
+	}}
+	p := testParams(profile.GuestFiles(profs))
+	out, err := Render(testConfig(), p)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	var doc map[string]interface{}
+	if err := yaml.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("rendered template with a files-less profile is not valid YAML: %v\n--- rendered ---\n%s", err, out)
+	}
+	if strings.Contains(out, "hook-only/files.list") {
+		t.Error("a files-less profile must not deliver a files.list")
+	}
+}
+
 func TestRenderMatchesGolden(t *testing.T) {
 	profs := testProfiles()
 	files := append(profile.GuestFiles(profs), guest.DataFile{
