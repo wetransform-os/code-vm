@@ -100,6 +100,21 @@ func withScratchConfig(t *testing.T) string {
 	return dir
 }
 
+// appendConfig appends raw YAML to the scratch config file written by
+// withScratchConfig, the same read-append-rewrite dance several tests below
+// already did inline for activating profiles or setting vars.
+func appendConfig(t *testing.T, extra string) {
+	t.Helper()
+	cfg := configPath
+	base, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, append(base, []byte(extra)...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestProfileAddClonesAndValidates(t *testing.T) {
 	root := NewRootCmd()
 	dir := withScratchConfig(t)
@@ -124,6 +139,57 @@ func TestProfileAddClonesAndValidates(t *testing.T) {
 	}
 	if !strings.Contains(got, "profiles:") {
 		t.Errorf("expected the activation hint in output, got:\n%s", got)
+	}
+}
+
+// makeGitProfileWithSecret creates a local git repo laid out as a valid
+// profile that declares one secret and references it from a template, so
+// `profile add` has something to warn about.
+func makeGitProfileWithSecret(t *testing.T) string {
+	t.Helper()
+	src := filepath.Join(t.TempDir(), "secret-profile")
+	if err := os.MkdirAll(filepath.Join(src, "templates"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "profile.yaml"), []byte(
+		"description: fixture with a secret\nsecrets:\n  api-token:\n    description: an API token\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "templates", ".netrc"), []byte("${secret:api-token}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init", "-q"}, {"add", "."},
+		{"-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "v1"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = src
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	return src
+}
+
+func TestProfileAddWarnsAboutDeclaredSecrets(t *testing.T) {
+	root := NewRootCmd()
+	_ = withScratchConfig(t)
+	src := makeGitProfileWithSecret(t)
+
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"profile", "add", src})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("profile add: %v\n%s", err, out.String())
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "declares secrets") || !strings.Contains(got, "api-token") {
+		t.Errorf("expected a warning naming the declared secret, got:\n%s", got)
+	}
+	if !strings.Contains(got, "secrets.yaml") {
+		t.Errorf("expected the warning to point at secrets.yaml, got:\n%s", got)
 	}
 }
 
@@ -181,6 +247,7 @@ func TestProfileListShowsStatus(t *testing.T) {
 	writeProfile(t, profilesRoot, "alpha", "description: active one\npackages: [fish]\n")
 	writeProfile(t, profilesRoot, "beta", "description: inactive one\npackages: [fish]\n")
 	writeProfile(t, profilesRoot, "gamma", "description: broken\npackages: [Not_Valid]\n")
+	writeProfile(t, profilesRoot, "delta", "description: has a secret\nsecrets:\n  a:\n    description: d\n")
 
 	cfg := filepath.Join(dir, "config.yaml")
 	base, err := os.ReadFile(cfg)
@@ -203,12 +270,14 @@ func TestProfileListShowsStatus(t *testing.T) {
 	// Parse per-line rather than substring-matching the whole output: "active"
 	// is itself a substring of "inactive".
 	states := map[string]string{}
+	lines := map[string]string{}
 	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
 		}
 		states[fields[0]] = fields[1]
+		lines[fields[0]] = line
 	}
 	if states["alpha"] != "active" {
 		t.Errorf("alpha state = %q, want %q; full output:\n%s", states["alpha"], "active", out.String())
@@ -218,6 +287,12 @@ func TestProfileListShowsStatus(t *testing.T) {
 	}
 	if states["gamma"] != "invalid" {
 		t.Errorf("gamma state = %q, want %q; full output:\n%s", states["gamma"], "invalid", out.String())
+	}
+	if !strings.Contains(lines["delta"], "[secrets: a]") {
+		t.Errorf("delta row should carry a secrets marker, got: %q", lines["delta"])
+	}
+	if strings.Contains(lines["alpha"], "[secrets:") {
+		t.Errorf("alpha row should not carry a secrets marker, got: %q", lines["alpha"])
 	}
 }
 
