@@ -123,6 +123,7 @@ provision:
     PROFILE_PACKAGES="fish"
     PROFILE_SHELL="/usr/bin/fish"
     PROFILE_HOOKS="fixture"
+    PROFILE_FILES="fixture"
 - mode: data
   path: "/usr/local/share/sandbox-profiles/fixture/files/.claude/CLAUDE.md"
   owner: "root:root"

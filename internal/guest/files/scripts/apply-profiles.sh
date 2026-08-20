@@ -109,7 +109,12 @@ run_as_agent_sh() {
 # Profile files are canonical: re-installed on every boot and every apply, so
 # local edits to them do not survive (same philosophy as lock-settings.sh).
 # Later profiles overwrite earlier ones — list order in the config wins.
-for name in ${PROFILES:-}; do
+# PROFILE_FILES (not PROFILES) drives the loop: only profiles the manifest says
+# ship files are consulted, so a stale files.list left on disk by a profile
+# version that has since dropped its files is never read — mode:data delivery
+# can overwrite files but never delete them, and an empty files.list is not
+# representable as a Lima block scalar.
+for name in ${PROFILE_FILES:-}; do
     list="$PROFILE_ROOT/$name/files.list"
     [ -f "$list" ] || continue
     while IFS= read -r rel; do

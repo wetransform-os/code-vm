@@ -38,18 +38,18 @@ func GuestFiles(profiles []Profile) []guest.DataFile {
 		}
 		// files.list names what THIS version ships; the applier installs
 		// exactly these, so files dropped from the profile stop being applied
-		// even though mode:data cannot delete their leftovers. Rendered for
-		// EVERY active profile, empty when it ships no files: like
-		// manifest.env, it must always be delivered, because a profile
-		// version that drops its last file still needs to overwrite a
-		// previous version's non-empty files.list with an empty one — a
-		// boot-path mode:data entry can never delete a stale file, only
-		// overwrite it.
-		out = append(out, guest.DataFile{
-			Path:        path.Join(GuestRoot, p.Name, "files.list"),
-			Permissions: "0444",
-			Content:     list.String(),
-		})
+		// even though mode:data cannot delete their leftovers. A profile that
+		// ships no files gets no files.list at all — an empty file cannot be
+		// represented as a Lima mode:data block scalar — and a stale one is
+		// kept inert by PROFILE_FILES in manifest.env, which gates whether the
+		// applier reads it (the same authoritative-manifest pattern as hooks).
+		if len(p.Files) > 0 {
+			out = append(out, guest.DataFile{
+				Path:        path.Join(GuestRoot, p.Name, "files.list"),
+				Permissions: "0444",
+				Content:     list.String(),
+			})
+		}
 		if p.Hook != nil {
 			out = append(out, guest.DataFile{
 				Path:        path.Join(GuestRoot, p.Name, "hook"),
@@ -65,7 +65,7 @@ func GuestFiles(profiles []Profile) []guest.DataFile {
 // time against charsets free of whitespace and quotes, so %q quoting is safe
 // for shell sourcing.
 func manifestEnv(profiles []Profile) guest.DataFile {
-	var names, packages, hooks []string
+	var names, packages, hooks, withFiles []string
 	seenPkg := map[string]bool{}
 	shell := ""
 	for _, p := range profiles {
@@ -82,6 +82,9 @@ func manifestEnv(profiles []Profile) guest.DataFile {
 		if p.Manifest.Hook != "" {
 			hooks = append(hooks, p.Name)
 		}
+		if len(p.Files) > 0 {
+			withFiles = append(withFiles, p.Name)
+		}
 	}
 	var b strings.Builder
 	b.WriteString("# Written by code-vm. Sourced by provision-system.sh and apply-profiles.sh.\n")
@@ -89,6 +92,10 @@ func manifestEnv(profiles []Profile) guest.DataFile {
 	fmt.Fprintf(&b, "PROFILE_PACKAGES=%q\n", strings.Join(packages, " "))
 	fmt.Fprintf(&b, "PROFILE_SHELL=%q\n", shell)
 	fmt.Fprintf(&b, "PROFILE_HOOKS=%q\n", strings.Join(hooks, " "))
+	// PROFILE_FILES gates which files.list the applier reads: a stale list a
+	// dropped-files profile version left on disk is never consulted, because
+	// this always-overwritten manifest no longer names it.
+	fmt.Fprintf(&b, "PROFILE_FILES=%q\n", strings.Join(withFiles, " "))
 	return guest.DataFile{Path: ManifestPath, Permissions: "0444", Content: b.String()}
 }
 

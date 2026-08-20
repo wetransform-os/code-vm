@@ -45,6 +45,7 @@ func TestGuestFilesLayout(t *testing.T) {
 		`PROFILE_PACKAGES="fish git"`, // union, order preserved, deduped
 		`PROFILE_SHELL="/usr/bin/fish"`,
 		`PROFILE_HOOKS="fish-shell"`,
+		`PROFILE_FILES="fish-shell wetf-claude"`,
 	} {
 		if !strings.Contains(manifest, want) {
 			t.Errorf("manifest.env missing %q, got:\n%s", want, manifest)
@@ -71,34 +72,28 @@ func TestGuestFilesLayout(t *testing.T) {
 	}
 }
 
-// A profile with zero files must still emit an (empty) files.list. Boot-path
-// delivery (mode:data) cannot delete a stale non-empty files.list from a
-// previous version, so a profile version that drops its last file needs an
-// empty files.list to make the applier stop reinstalling it.
-func TestGuestFilesEmitsEmptyFilesListForFilesLessProfile(t *testing.T) {
+// A profile with zero files must emit NO files.list — an empty file cannot be
+// represented as a Lima mode:data block scalar (limactl rejects blank
+// scalars, and an empty literal block breaks the surrounding YAML). Staleness
+// of a leftover files.list is instead handled by PROFILE_FILES in
+// manifest.env, which the applier consults before reading any list.
+func TestGuestFilesOmitsFilesListForFilesLessProfile(t *testing.T) {
 	profiles := []Profile{{
 		Name:     "no-files",
 		Manifest: Manifest{Packages: []string{"git"}},
 	}}
 	files := GuestFiles(profiles)
-	byPath := map[string]string{}
-	perms := map[string]string{}
-	found := false
+	manifest := ""
 	for _, f := range files {
-		byPath[f.Path] = f.Content
-		perms[f.Path] = f.Permissions
 		if f.Path == GuestRoot+"/no-files/files.list" {
-			found = true
+			t.Fatalf("a files-less profile must not render a files.list (unrepresentable as mode:data), got %+v", f)
+		}
+		if f.Path == ManifestPath {
+			manifest = f.Content
 		}
 	}
-	if !found {
-		t.Fatalf("expected %s/no-files/files.list to be rendered even with zero files, got %+v", GuestRoot, files)
-	}
-	if byPath[GuestRoot+"/no-files/files.list"] != "" {
-		t.Errorf("files.list content = %q, want empty", byPath[GuestRoot+"/no-files/files.list"])
-	}
-	if perms[GuestRoot+"/no-files/files.list"] != "0444" {
-		t.Errorf("files.list permissions = %q, want 0444", perms[GuestRoot+"/no-files/files.list"])
+	if !strings.Contains(manifest, `PROFILE_FILES=""`) {
+		t.Errorf("manifest.env must not list no-files under PROFILE_FILES, got:\n%s", manifest)
 	}
 }
 
@@ -107,7 +102,7 @@ func TestGuestFilesAlwaysIncludesManifest(t *testing.T) {
 	if len(files) != 1 || files[0].Path != ManifestPath {
 		t.Fatalf("zero profiles must still render exactly manifest.env, got %+v", files)
 	}
-	for _, want := range []string{`PROFILES=""`, `PROFILE_PACKAGES=""`, `PROFILE_SHELL=""`, `PROFILE_HOOKS=""`} {
+	for _, want := range []string{`PROFILES=""`, `PROFILE_PACKAGES=""`, `PROFILE_SHELL=""`, `PROFILE_HOOKS=""`, `PROFILE_FILES=""`} {
 		if !strings.Contains(files[0].Content, want) {
 			t.Errorf("empty manifest.env missing %q", want)
 		}
