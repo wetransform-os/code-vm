@@ -6,7 +6,13 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"time"
 )
+
+// stagedCleanupTimeout bounds the best-effort removal of a staged file so it
+// cannot hang the process: it runs even when the caller's own ctx is
+// cancelled or already past its deadline (see cleanupStaged).
+const stagedCleanupTimeout = 10 * time.Second
 
 // relCharsetRe mirrors the charset profile.relPathRe enforces on the host
 // side: conservative on purpose, since rel is written into a root-run
@@ -33,6 +39,14 @@ func PushUserFile(ctx context.Context, d Deps, content []byte, rel, mode string)
 	if err != nil {
 		return err
 	}
+	// Best-effort cleanup on every return path, not just failure: the relay
+	// script itself removes the staged copy on success (see
+	// install-user-file.sh), so this is a harmless double-delete then. It is
+	// load-bearing on failure — notably the supported old-VM/missing-script
+	// case below — where the relay never touches the staged copy at all,
+	// which would otherwise leave a rendered credential sitting in the
+	// admin-only staging dir indefinitely.
+	defer cleanupStaged(d, staged)
 	if err := d.Client.Admin(ctx, []string{
 		"/usr/local/lib/sandbox/install-user-file.sh", staged, rel, mode,
 	}); err != nil {
@@ -43,6 +57,19 @@ func PushUserFile(ctx context.Context, d Deps, content []byte, rel, mode string)
 			"code-vm version; restart it with `code-vm stop && code-vm start`)", rel, err)
 	}
 	return nil
+}
+
+// cleanupStaged best-effort removes a staged file via the admin channel. It
+// uses an independent, bounded context rather than the caller's ctx so it
+// still runs when that ctx is cancelled or already past its deadline —
+// exactly the case a failed Admin call above may have left it in. The error
+// is intentionally discarded: this is cleanup of a temporary drop, not a
+// step whose failure should mask (or be conflated with) the actual result of
+// PushUserFile.
+func cleanupStaged(d Deps, staged string) {
+	ctx, cancel := context.WithTimeout(context.Background(), stagedCleanupTimeout)
+	defer cancel()
+	_ = d.Client.Admin(ctx, []string{"rm", "-f", staged})
 }
 
 // hasDotDotSegment reports whether rel contains a literal ".." path segment.
