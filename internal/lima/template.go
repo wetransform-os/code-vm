@@ -77,21 +77,84 @@ func guestBlockContent(s string) string {
 	return escaped
 }
 
+// trailingNewlines counts s's trailing "\n" bytes.
+func trailingNewlines(s string) int {
+	n := 0
+	for i := len(s) - 1; i >= 0 && s[i] == '\n'; i-- {
+		n++
+	}
+	return n
+}
+
+// chomp returns the YAML block scalar chomping indicator that reproduces s's
+// trailing newlines exactly: clip (no indicator) keeps exactly one, so it is
+// only correct when s ends with exactly one "\n". Content with none needs
+// strip ("-"); content with more than one needs keep ("+"), paired with
+// indent below reproducing the extra ones as trailing blank lines. Without
+// this, every embedded file gained or lost trailing newlines relative to its
+// source: profile apply (a byte-exact staged copy) and the boot path (this
+// template) would silently diverge on trailing-newline count alone.
+//
+// Known limitation, confirmed against limactl 2.2.0 rather than assumed:
+// `limactl template copy --embed-all` (what ResolveConfigInto and `limactl
+// start` both run for our base-inherited template, same as the tab bug
+// documented on guestBlockContent) re-serializes the whole document and does
+// not preserve the "+" (keep) indicator — it silently rewrites those block
+// scalars back to clip, collapsing 2+ trailing newlines down to exactly one.
+// Content with 0 or 1 trailing newlines (the overwhelming majority of real
+// files) round-trips correctly through that step; content with 2+ does not,
+// purely because of that downstream rewrite. This is strictly better than
+// before the fix (which forced every file through exactly one trailing
+// newline regardless of chomping), and is left as-is per the existing
+// guard-only-what-we-can policy: it is limactl's own re-serialization that is
+// lossy here, not this template's rendering, which validates and round-trips
+// correctly prior to that step.
+func chomp(s string) string {
+	switch trailingNewlines(s) {
+	case 0:
+		return "-"
+	case 1:
+		if s == "\n" {
+			// A block scalar with no non-blank line at all has nothing for
+			// clip's implicit "keep exactly one final line break" to anchor
+			// on: a wholly-blank block collapses to "" under both clip and
+			// strip (confirmed against yaml.v3). Only keep reproduces the
+			// single blank line's own newline.
+			return "+"
+		}
+		return ""
+	default:
+		return "+"
+	}
+}
+
 // indent prefixes every non-empty line with n spaces. YAML block scalars
 // reproduce content verbatim, so together with an explicit indentation
 // indicator on the block header (see code-sandbox.yaml.tpl's "content: |2")
 // and guestBlockContent's tab guard, this is all that is needed to embed
 // arbitrary file content safely, including content whose own first line
 // starts with a space or tab.
+//
+// Pairs with chomp: chomp's "keep" indicator ("+") preserves the block's
+// final line break plus every trailing blank line that follows it in the
+// document, so when s has more than one trailing "\n", the extra ones (all
+// but the last, which the template's own line break after this block
+// supplies) are reproduced here as blank lines. Blank lines need no
+// indentation in a YAML literal block scalar.
 func indent(n int, s string) string {
 	pad := strings.Repeat(" ", n)
+	trailing := trailingNewlines(s)
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
 	for i, l := range lines {
 		if l != "" {
 			lines[i] = pad + l
 		}
 	}
-	return strings.Join(lines, "\n")
+	out := strings.Join(lines, "\n")
+	if trailing > 1 {
+		out += strings.Repeat("\n", trailing-1)
+	}
+	return out
 }
 
 // Render produces the Lima instance YAML for the given config.
@@ -114,6 +177,7 @@ func Render(c config.Config, p RenderParams) (string, error) {
 	tpl, err := template.New("lima").Funcs(template.FuncMap{
 		"indent":     indent,
 		"escapeData": guestBlockContent,
+		"chomp":      chomp,
 	}).Parse(raw)
 	if err != nil {
 		return "", fmt.Errorf("parse Lima template: %w", err)

@@ -256,6 +256,109 @@ func TestRenderHandlesContentWithLeadingWhitespace(t *testing.T) {
 	}
 }
 
+// Trailing-newline fidelity: `indent`'s old TrimRight(s, "\n") plus the
+// template's fixed "content: |2" (clip chomping) header forced every
+// embedded file through exactly one trailing newline, no matter how many it
+// actually had. A file with none gained one; a file with several collapsed
+// to one. `profile apply` (a byte-exact staged copy) does not have this
+// problem, so the two delivery paths silently diverged. This pins the fix:
+// the rendered document must stay valid YAML, and — critically — decoding
+// the provision entry's content and then executing it as a Go template (the
+// per-file pass Lima itself runs on every mode:data entry, see
+// escapeGuestTemplate) must reproduce the original bytes exactly, trailing
+// newlines included.
+func TestRenderPreservesTrailingNewlineFidelity(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"no trailing newline", "x"},
+		{"one trailing newline", "x\n"},
+		{"three trailing newlines", "x\n\n\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			files := []guest.DataFile{{
+				Path:        "/usr/local/lib/sandbox/trailing.sh",
+				Permissions: "0644",
+				Content:     tc.content,
+			}}
+			out, err := Render(testConfig(), testParams(files))
+			if err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+
+			var doc map[string]interface{}
+			if err := yaml.Unmarshal([]byte(out), &doc); err != nil {
+				t.Fatalf("rendered template is not valid YAML: %v\n--- rendered ---\n%s", err, out)
+			}
+
+			entryContent := findProvisionContent(t, doc, files[0].Path)
+			tpl, err := template.New("roundtrip").Parse(entryContent)
+			if err != nil {
+				t.Fatalf("guest content must parse as a Go template, got: %v", err)
+			}
+			var b strings.Builder
+			if err := tpl.Execute(&b, nil); err != nil {
+				t.Fatalf("guest content must execute cleanly, got: %v", err)
+			}
+			if b.String() != tc.content {
+				t.Errorf("round trip mismatch:\n--- got ---\n%q\n--- want ---\n%q", b.String(), tc.content)
+			}
+		})
+	}
+}
+
+// A DataFile whose content is empty or consists solely of newline characters
+// (a literal block scalar with no non-blank line at all) is rejected before
+// it ever becomes a DataFile: package profile's isBlank check refuses such
+// files and hooks at Load time, with its own tests. That rejection exists
+// precisely because this case is a genuine limactl limitation, not just a
+// theoretical one: confirmed against limactl 2.2.0, `limactl validate`
+// outright fails to parse a rendered document containing such a block
+// ("could not find multi-line content" / "mapping value is not allowed in
+// this context"), regardless of which chomping indicator is used — even
+// though the same document parses and round-trips correctly with
+// gopkg.in/yaml.v3, which is what this test (deliberately) still uses. This
+// test therefore documents a narrower claim than it might look like: our own
+// template layer renders spec-valid YAML for blank content, but that is not
+// sufficient for limactl's own parser, which is why profile.Load blocks it
+// upstream instead of relying on this layer.
+func TestRenderHandlesEmptyContent(t *testing.T) {
+	for _, tc := range []struct{ name, content string }{
+		{"totally empty", ""},
+		{"single newline", "\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			files := []guest.DataFile{{
+				Path:        "/usr/local/lib/sandbox/empty.sh",
+				Permissions: "0644",
+				Content:     tc.content,
+			}}
+			out, err := Render(testConfig(), testParams(files))
+			if err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+			var doc map[string]interface{}
+			if err := yaml.Unmarshal([]byte(out), &doc); err != nil {
+				t.Fatalf("rendered template is not valid YAML: %v\n--- rendered ---\n%s", err, out)
+			}
+			entryContent := findProvisionContent(t, doc, files[0].Path)
+			tpl, err := template.New("roundtrip").Parse(entryContent)
+			if err != nil {
+				t.Fatalf("guest content must parse as a Go template, got: %v", err)
+			}
+			var b strings.Builder
+			if err := tpl.Execute(&b, nil); err != nil {
+				t.Fatalf("guest content must execute cleanly, got: %v", err)
+			}
+			if b.String() != tc.content {
+				t.Errorf("round trip mismatch:\n--- got ---\n%q\n--- want ---\n%q", b.String(), tc.content)
+			}
+		})
+	}
+}
+
 func testProfiles() []profile.Profile {
 	return []profile.Profile{{
 		Name: "fixture",
