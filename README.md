@@ -107,29 +107,38 @@ the accelerated one for the host:
 | Linux | `qemu` | KVM | the `virtiofsd` package |
 | macOS 13.5+ | `vz` | Hypervisor.framework (HVF) | Virtualization.framework |
 
-### Credentials
+### No workspace credentials
 
-There is **no credential injection mechanism**. If a build needs a private
-registry, write the credential file into the guest home once — it persists across
-restarts, because the guest disk is the sandbox's durable state:
+Nothing agent- or workspace-authored is ever a credential source. The
+previous `.sandbox-secrets.yaml` mechanism was removed rather than fixed: it
+resolved each secret by running its `source:` command **on the host** — from
+a file inside the workspace, which the agent can write. That is host command
+execution reachable from inside the sandbox, which defeats the boundary the
+whole design exists to draw. Its stated protection did not hold either:
+rendered files were group-readable by the agent, and the generated deny
+rules only matched commands where the path appeared as a separate argument,
+which `python -c` (an allowed command) sidesteps. That class of mechanism
+stays removed, and the integration suite pins it.
 
-```bash
-code-vm                                     # shell into the guest
-$ install -d -m 0700 ~/.gradle
-$ cat > ~/.gradle/gradle.properties          # paste, or pipe it in
-```
+Credentials enter the sandbox in one of two ways:
 
-Assume the agent can read anything you put there, and use credentials created
-for the sandbox rather than your personal ones, so revoking them is cheap.
+- Written directly into the guest home, once — it persists across restarts,
+  because the guest disk is the sandbox's durable state:
 
-The previous `.sandbox-secrets.yaml` mechanism was removed rather than fixed. It
-resolved each secret by running its `source:` command **on the host** — from a
-file inside the workspace, which the agent can write. That is host command
-execution reachable from inside the sandbox, which defeats the boundary the whole
-design exists to draw. Its stated protection did not hold either: rendered files
-were group-readable by the agent, and the generated deny rules only matched
-commands where the path appeared as a separate argument, which `python -c` (an
-allowed command) sidesteps.
+  ```bash
+  code-vm                                     # shell into the guest
+  $ install -d -m 0700 ~/.gradle
+  $ cat > ~/.gradle/gradle.properties          # paste, or pipe it in
+  ```
+
+  Assume the agent can read anything you put there, and use credentials
+  created for the sandbox rather than your personal ones, so revoking them
+  is cheap.
+
+- Through a profile's `templates:` (see [Credentials](#credentials) under
+  Profiles) — the host-trusted mechanism for sharing a credentialed config's
+  shape while keeping the credential itself in the user's own
+  `secrets.yaml`.
 
 ### Extending the allowlist
 
