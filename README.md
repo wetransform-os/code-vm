@@ -135,7 +135,7 @@ Credentials enter the sandbox in one of two ways:
   created for the sandbox rather than your personal ones, so revoking them
   is cheap.
 
-- Through a profile's `templates:` (see [Credentials](#credentials) under
+- Through a profile's `templates/` tree (see [Credentials](#credentials) under
   Profiles) — the host-trusted mechanism for sharing a credentialed config's
   shape while keeping the credential itself in the user's own
   `secrets.yaml`.
@@ -306,8 +306,13 @@ verbatim and reserves placeholders only for the credentialed bits:
 </settings>
 ```
 
-`description` and `suggest` are inert display strings: a profile can never
-make anything execute. Values come only from the user's own mapping:
+`description` and `suggest` are inert display strings on the *host*: nothing
+a profile ships is ever run there, and these two fields specifically are
+never even parsed as commands. The user's own `secrets.yaml` `command` is
+the only host execution in this mechanism. (Profile hooks are the deliberate
+exception to "profiles don't execute" — they do run profile-shipped code,
+but in the guest, as the agent, as described above.) Values come only from
+the user's own mapping:
 
 - **`~/.config/code-vm/secrets.yaml`** — 0600, host-trusted like
   `config.yaml`, never distributed with the profile:
