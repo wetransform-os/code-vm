@@ -29,6 +29,21 @@ func profilesDir() (string, error) {
 	return config.ProfilesDirFor(path), nil
 }
 
+// gitOrigin reports a profile's git remote origin, trimmed, or "local" when
+// dir is not a git checkout (or has no origin remote) — the design spec's
+// list command shows "git origin if any".
+func gitOrigin(dir string) string {
+	out, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return "local"
+	}
+	origin := strings.TrimSpace(string(out))
+	if origin == "" {
+		return "local"
+	}
+	return origin
+}
+
 // runGit runs git with the given arguments, streaming output to the command's
 // writers so clone/pull progress stays visible.
 func runGit(ctx context.Context, cmd *cobra.Command, dir string, args ...string) error {
@@ -215,7 +230,8 @@ func newProfileListCmd() *cobra.Command {
 				} else {
 					desc = p.Manifest.Description
 				}
-				fmt.Fprintf(out, "%-24s %-8s %s\n", name, state, desc)
+				origin := gitOrigin(filepath.Join(dir, name))
+				fmt.Fprintf(out, "%-24s %-8s %-40s %s\n", name, state, origin, desc)
 			}
 			return nil
 		},

@@ -221,6 +221,47 @@ func TestProfileListShowsStatus(t *testing.T) {
 	}
 }
 
+// The design spec's CLI section says `profile list` shows "git origin if
+// any". A hand-authored profile (no .git) must show "local"; a git-cloned
+// one must show its origin URL (here, the local path it was cloned from,
+// since makeGitProfile uses a filesystem remote).
+func TestProfileListShowsGitOrigin(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	profilesRoot := filepath.Join(dir, "profiles")
+	writeProfile(t, profilesRoot, "handmade", "description: local\npackages: [fish]\n")
+
+	src := makeGitProfile(t)
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"profile", "add", src})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("profile add: %v\n%s", err, out.String())
+	}
+
+	out.Reset()
+	root.SetArgs([]string{"profile", "list"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("profile list: %v\n%s", err, out.String())
+	}
+
+	lines := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 1 {
+			continue
+		}
+		lines[fields[0]] = line
+	}
+	if !strings.Contains(lines["handmade"], "local") {
+		t.Errorf("hand-made profile row should show \"local\", got: %q", lines["handmade"])
+	}
+	if !strings.Contains(lines["team-fish"], src) {
+		t.Errorf("git-cloned profile row should show its origin %q, got: %q", src, lines["team-fish"])
+	}
+}
+
 func TestProfileRemoveRefusesActive(t *testing.T) {
 	root := NewRootCmd() // one root, reused for all three invocations
 	dir := withScratchConfig(t)
