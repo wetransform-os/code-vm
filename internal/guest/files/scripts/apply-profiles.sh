@@ -137,8 +137,10 @@ done
 # Last declared shell wins (rendered into PROFILE_SHELL by code-vm). Never
 # reverted when a profile is deactivated — recreate is the clean-slate path.
 if [ -n "${PROFILE_SHELL:-}" ]; then
-    if [ ! -x "$PROFILE_SHELL" ]; then
-        echo "[profiles] ERROR: shell $PROFILE_SHELL does not exist or is not executable" >&2
+    # -f as well as -x: -x alone is true for searchable directories, and a
+    # directory in /etc/shells + passwd bricks every later session (exit 126).
+    if [ ! -f "$PROFILE_SHELL" ] || [ ! -x "$PROFILE_SHELL" ]; then
+        echo "[profiles] ERROR: shell $PROFILE_SHELL is not an executable file" >&2
         exit 1
     fi
     grep -qxF "$PROFILE_SHELL" /etc/shells || echo "$PROFILE_SHELL" >> /etc/shells
