@@ -84,7 +84,16 @@ func newMountCmd() *cobra.Command {
 			if err := cl.Stop(cmd.Context()); err != nil {
 				return err
 			}
-			return ensureRunning(cmd.Context(), cl, updated, profiles)
+			started, err := ensureRunning(cmd.Context(), cl, updated, profiles)
+			if err != nil {
+				return err
+			}
+			if started {
+				if err := pushRenderedTemplates(cmd.Context(), cl, updated, profiles, path, out); err != nil {
+					return err
+				}
+			}
+			return nil
 		},
 	}
 }

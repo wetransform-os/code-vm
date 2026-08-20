@@ -46,11 +46,15 @@ func TestEnsureRunningStartsWhenAbsentOrStopped(t *testing.T) {
 	for _, status := range []string{"", "Stopped", "Broken"} {
 		t.Run("status="+status, func(t *testing.T) {
 			r := &recordingRunner{statusOut: status}
-			if err := ensureRunning(context.Background(), lima.Client{R: r}, testCfg(t), nil); err != nil {
+			started, err := ensureRunning(context.Background(), lima.Client{R: r}, testCfg(t), nil)
+			if err != nil {
 				t.Fatalf("ensureRunning: %v", err)
 			}
 			if !r.started() {
 				t.Errorf("expected a start call for status %q, calls=%v", status, r.calls)
+			}
+			if !started {
+				t.Errorf("started = false for status %q, want true", status)
 			}
 		})
 	}
@@ -61,7 +65,7 @@ func TestEnsureRunningStartsWhenAbsentOrStopped(t *testing.T) {
 // config via `template copy --embed-all` and then start by name.
 func TestEnsureRunningUpdatesStoredConfigWhenStopped(t *testing.T) {
 	r := &recordingRunner{statusOut: "Stopped"}
-	if err := ensureRunning(context.Background(), lima.Client{R: r}, testCfg(t), nil); err != nil {
+	if _, err := ensureRunning(context.Background(), lima.Client{R: r}, testCfg(t), nil); err != nil {
 		t.Fatalf("ensureRunning: %v", err)
 	}
 	var sawResolve, sawPlainStart bool
@@ -87,11 +91,15 @@ func TestEnsureRunningUpdatesStoredConfigWhenStopped(t *testing.T) {
 
 func TestEnsureRunningIsNoOpWhenRunning(t *testing.T) {
 	r := &recordingRunner{statusOut: "Running"}
-	if err := ensureRunning(context.Background(), lima.Client{R: r}, testCfg(t), nil); err != nil {
+	started, err := ensureRunning(context.Background(), lima.Client{R: r}, testCfg(t), nil)
+	if err != nil {
 		t.Fatalf("ensureRunning: %v", err)
 	}
 	if r.started() {
 		t.Errorf("must not start an already-running instance, calls=%v", r.calls)
+	}
+	if started {
+		t.Errorf("started = true for a Running instance, want false")
 	}
 }
 
