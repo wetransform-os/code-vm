@@ -49,6 +49,26 @@ func TestPushRenderedTemplatesResolvesAndPushes(t *testing.T) {
 	}
 }
 
+func TestHostCommandReturnsStdoutOnlyOnSuccess(t *testing.T) {
+	out, err := hostCommand(context.Background(), "echo warn >&2; echo value")
+	if err != nil {
+		t.Fatalf("hostCommand: %v", err)
+	}
+	if string(out) != "value\n" {
+		t.Errorf("hostCommand output = %q, want %q (stderr must not leak into the value)", out, "value\n")
+	}
+}
+
+func TestHostCommandReturnsStderrOnFailure(t *testing.T) {
+	out, err := hostCommand(context.Background(), "echo oops >&2; exit 3")
+	if err == nil {
+		t.Fatalf("hostCommand: expected an error, got nil (out=%q)", out)
+	}
+	if !strings.Contains(string(out), "oops") {
+		t.Errorf("hostCommand output on failure = %q, want it to contain %q", out, "oops")
+	}
+}
+
 func TestPushRenderedTemplatesMissingMappingFails(t *testing.T) {
 	r := &recordingRunner{}
 	c := testCfg(t)

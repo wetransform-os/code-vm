@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -202,9 +203,17 @@ func pushRenderedTemplates(ctx context.Context, cl lima.Client, c config.Config,
 }
 
 // hostCommand runs a secrets.yaml command through the user's shell on the
-// host. Dual contract for profile.CommandRunner consumers: stdout carries the
-// resolved value on success, while CombinedOutput's stderr is folded in so a
-// failure's error message has something readable to show the user.
+// host. The value is stdout ONLY — stderr chatter from a succeeding command
+// (gpg warnings, deprecation notices) must never leak into a credential.
+// On failure, the captured stderr is returned as display text for the error.
 func hostCommand(ctx context.Context, command string) ([]byte, error) {
-	return exec.CommandContext(ctx, "sh", "-c", command).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "sh", "-c", command).Output()
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return ee.Stderr, err
+		}
+		return nil, err
+	}
+	return out, nil
 }
