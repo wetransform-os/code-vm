@@ -469,6 +469,15 @@ else
     fail "allow rejects malformed input (got: $MALFORMED_OUT)"
 fi
 
+# Host-side, no VM needed: an unrecognized word must not be forwarded into the
+# guest. Captured, not piped: code-vm exits non-zero here by design.
+UNKNOWN_OUT=$("${CODE_VM_ARGS[@]}" profile-typo add x 2>&1)
+if echo "$UNKNOWN_OUT" | grep -q 'unknown command "profile-typo"'; then
+    pass "an unknown subcommand is refused on the host"
+else
+    fail "an unknown subcommand is refused on the host (got: $UNKNOWN_OUT)"
+fi
+
 # Removing the domain from the config must take effect, or a revoked domain
 # would stay allowed for the VM's lifetime.
 cp "$CONFIG_FILE.suite-backup" "$CONFIG_FILE"

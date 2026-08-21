@@ -23,7 +23,7 @@ func NewRootCmd() *cobra.Command {
 			"directory: that directory becomes the working directory in the guest.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Args:          cobra.ArbitraryArgs,
+		Args:          rejectUnknownCommand,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDefault(cmd.Context(), args)
 		},
@@ -41,6 +41,27 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newProfileCmd())
 	root.AddCommand(newSecretsCmd())
 	return root
+}
+
+// rejectUnknownCommand accepts the two forms the root command really has — a
+// bare invocation (interactive shell) and `code-vm -- <cmd> ...` (run <cmd>
+// as the agent) — and refuses anything else on the host.
+//
+// Passthrough forces the root command to accept arbitrary args, which used to
+// mean cobra handed any word it did not recognize as a subcommand straight to
+// the guest. A typo, or a binary older than the subcommand being invoked, then
+// failed as the guest shell's `exec: profile: not found` (exit 127) after the
+// VM had already been booted and entered — an error naming neither the real
+// problem nor the host. ArgsLenAtDash reports how many args preceded `--`
+// (-1 when there is no `--`), so 0 is exactly the passthrough form.
+func rejectUnknownCommand(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 || cmd.ArgsLenAtDash() == 0 {
+		return nil
+	}
+	path := cmd.CommandPath()
+	return fmt.Errorf("unknown command %q for %q\n"+
+		"Run %q for the command list, or %q to run it in the sandbox",
+		args[0], path, path+" --help", path+" -- "+args[0]+" ...")
 }
 
 // Execute runs the CLI.
