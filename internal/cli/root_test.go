@@ -76,3 +76,46 @@ func TestLoadConfigCanonicalizesSymlinkedConfigDir(t *testing.T) {
 		t.Errorf("loadConfig error = %v, want a MountsExclude refusal", err)
 	}
 }
+
+// The root command takes arbitrary args because a bare `code-vm -- <cmd>`
+// forwards them to the guest. That must not extend to args with no `--` in
+// front of them: cobra would hand any unrecognized word to the guest, so a
+// typo — or a stale binary that predates a subcommand the caller expects —
+// surfaced as the guest shell's `exec: profile: not found` and exit 127
+// instead of a host-side "unknown command". Nothing may reach the VM.
+func TestRootRejectsUnknownSubcommandBeforeTouchingTheVM(t *testing.T) {
+	root := NewRootCmd()
+	setupShellFixture(t)
+
+	r := installFakeClient(t, "")
+	root.SetArgs([]string{"profile-typo", "add", "git@example.com:x/y.git"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("unknown subcommand = nil error, want a host-side refusal")
+	}
+	if !strings.Contains(err.Error(), `unknown command "profile-typo"`) {
+		t.Errorf("error = %v, want it to name the unknown command", err)
+	}
+	if !strings.Contains(err.Error(), "--") {
+		t.Errorf("error = %v, want it to point at `--` for sandbox passthrough", err)
+	}
+	if len(r.calls) != 0 {
+		t.Errorf("nothing may reach the VM for an unknown command, calls=%v", r.calls)
+	}
+}
+
+// The counterpart: an explicit `--` still forwards everything after it to the
+// guest verbatim, including words that collide with host subcommand names.
+func TestRootPassesArgsAfterDoubleDashToTheGuest(t *testing.T) {
+	root := NewRootCmd()
+	setupShellFixture(t)
+
+	r := installFakeClient(t, "Running")
+	root.SetArgs([]string{"--", "claude", "login"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("`-- claude login` = %v, want passthrough", err)
+	}
+	if !ranAny(r.calls, "claude login") {
+		t.Errorf("guest command not forwarded, calls=%v", r.calls)
+	}
+}

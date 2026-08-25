@@ -74,6 +74,12 @@ code-vm                          # interactive shell
 | `code-vm secrets` | List secrets/vars the active profiles declare, mapped or not |
 | `code-vm doctor` | Check host prerequisites |
 
+Guest passthrough needs the `--`. Anything else is an unknown command,
+refused on the host before the VM is touched: `code-vm claude -p ...` is a
+typo, `code-vm -- claude -p ...` is the command you meant. That also means
+invoking a subcommand your installed binary is too old to have fails with
+`unknown command`, instead of being forwarded to the guest to fail there.
+
 ## Configuration
 
 `~/.config/code-vm/config.yaml`:
