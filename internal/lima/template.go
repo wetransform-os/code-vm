@@ -43,6 +43,9 @@ func provisionEnv(c config.Config, p RenderParams) guest.DataFile {
 	}
 	fmt.Fprintf(&b, "EXTRA_ALLOWED_DOMAINS=%q\n", strings.Join(domains, " "))
 	fmt.Fprintf(&b, "CONTAINER_PROXY=%t\n", c.ContainerProxy)
+	// Render has already run Validate, so this matched sizeRe and is safe
+	// to write unquoted.
+	fmt.Fprintf(&b, "SWAP_SIZE=%s\n", c.Swap)
 	return guest.DataFile{Path: "/etc/sandbox/provision.env", Permissions: "0444", Content: b.String()}
 }
 

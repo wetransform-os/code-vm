@@ -41,10 +41,15 @@ type Config struct {
 	// VMType selects the Lima hypervisor driver. Empty (default) means
 	// the host's accelerated one, so nothing has to be set on either platform;
 	// see ResolveVMType.
-	VMType         string   `yaml:"vmType,omitempty"`
-	CPUs           int      `yaml:"cpus"`
-	Memory         string   `yaml:"memory"`
-	Disk           string   `yaml:"disk"`
+	VMType string `yaml:"vmType,omitempty"`
+	CPUs   int    `yaml:"cpus"`
+	Memory string `yaml:"memory"`
+	Disk   string `yaml:"disk"`
+	// Swap sizes the guest swapfile. The guest image ships without swap, so a
+	// memory burst (a Gradle build plus Testcontainers, say) goes straight to
+	// the OOM killer, which picks dockerd first. Swap turns that into
+	// slowness the user can notice and act on. "0B" disables it.
+	Swap           string   `yaml:"swap"`
 	ExtraDomains   []string `yaml:"extraDomains,omitempty"`
 	ContainerProxy bool     `yaml:"containerProxy"`
 	// Profiles names the customization bundles applied to the guest, in
@@ -66,6 +71,7 @@ func Default() Config {
 		CPUs:           4,
 		Memory:         "12GiB",
 		Disk:           "100GiB",
+		Swap:           "4GiB",
 		ContainerProxy: false,
 	}
 }
@@ -144,6 +150,9 @@ func (c Config) Validate() error {
 	}
 	if !sizeRe.MatchString(c.Disk) {
 		return fmt.Errorf("disk must look like \"100GiB\", got %q", c.Disk)
+	}
+	if !sizeRe.MatchString(c.Swap) {
+		return fmt.Errorf("swap must look like \"4GiB\" (or \"0B\" to disable), got %q", c.Swap)
 	}
 	for i, d := range c.ExtraDomains {
 		if err := ValidateDomain(d); err != nil {

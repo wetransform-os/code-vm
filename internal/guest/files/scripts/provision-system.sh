@@ -7,7 +7,7 @@
 #
 # Inputs come from /etc/sandbox/provision.env, a mode:data file rendered by
 # code-vm: AGENT_USER, AGENT_UID, AGENT_GID, EXTRA_ALLOWED_DOMAINS,
-# CONTAINER_PROXY.
+# CONTAINER_PROXY, SWAP_SIZE.
 ###############################################################################
 set -euo pipefail
 
@@ -146,6 +146,79 @@ TasksMax=2048
 MemoryMax=${MEM_MAX_MB}M
 EOF
 systemctl daemon-reload
+
+# ── /tmp on disk ─────────────────────────────────────────────────────────────
+# The stock image mounts /tmp as a tmpfs sized at half of RAM (tmp.mount, a
+# static unit). Agent scratch written there — Claude Code's own scratchpad
+# among it — then competes with the workload for memory: 3.7 GB of scratch on
+# a 12 GB guest was what tipped a Gradle-plus-Testcontainers run into the OOM
+# killer. On the root filesystem the same scratch is just disk, which
+# systemd-tmpfiles still ages out (stock tmp.conf: 10 days).
+#
+# The mask is what persists across boots. Unmounting here as well makes it
+# effective on this very boot: provisioning runs before anything
+# sandbox-specific has touched /tmp, so the tmpfs is empty and unused. If it
+# is busy, it is left alone (a lazy unmount would let its holders keep
+# writing into an orphaned tmpfs) and takes effect on the next boot; the
+# marker tells the integration suite which of the two happened.
+systemctl mask tmp.mount > /dev/null 2>&1 || true
+install -d -m 0755 /run/sandbox
+rm -f /run/sandbox/tmp-unmount-deferred
+if [ "$(findmnt -no FSTYPE /tmp 2> /dev/null || true)" = "tmpfs" ]; then
+    if umount /tmp 2> /dev/null; then
+        chmod 1777 /tmp
+        log "/tmp: tmpfs unmounted; now on the root filesystem"
+    else
+        touch /run/sandbox/tmp-unmount-deferred
+        log "/tmp: tmpfs is busy, stays until the next boot (tmp.mount is masked)"
+    fi
+fi
+
+# ── Swap ─────────────────────────────────────────────────────────────────────
+# The image ships without swap, so a memory burst goes straight to the OOM
+# killer. That picks dockerd (highest oom_score_adj), the workload restarts
+# it, and the loop leaves the guest unresponsive. A swapfile on the guest disk
+# turns the burst into slowness instead. It also changes what the agent
+# slice's MemoryMax above does: with swap present, the slice hitting its
+# limit swaps (MemorySwapMax is unlimited) instead of being OOM-killed.
+#
+# SWAP_SIZE is a Lima-style size ("4GiB") validated on the host; "0B" means
+# no swap. A wrong-sized swapfile is recreated so a config change takes
+# effect on the next start. Swap is a mitigation, not a prerequisite, so
+# failing to set it up is logged and provisioning continues.
+SWAPFILE=/swapfile
+SWAP_WANT=$(numfmt --from=iec-i "${SWAP_SIZE%B}")
+SWAP_HAVE=0
+[ -f "$SWAPFILE" ] && SWAP_HAVE=$(stat -c %s "$SWAPFILE")
+swap_active() { swapon --show=NAME --noheadings | grep -qx "$SWAPFILE"; }
+if [ "$SWAP_WANT" -eq 0 ] || [ "$SWAP_HAVE" -ne "$SWAP_WANT" ]; then
+    if [ -f "$SWAPFILE" ]; then
+        if swap_active && ! swapoff "$SWAPFILE"; then
+            log "WARNING: swapoff $SWAPFILE failed; keeping the existing $(numfmt --to=iec-i "$SWAP_HAVE")B swapfile"
+        else
+            rm -f "$SWAPFILE"
+            SWAP_HAVE=0
+        fi
+    fi
+fi
+if [ "$SWAP_WANT" -ne 0 ] && [ "$SWAP_HAVE" -eq 0 ]; then
+    log "Creating ${SWAP_SIZE} swapfile at $SWAPFILE"
+    # fallocate is fine for ext4, which the image's root filesystem is.
+    if fallocate -l "$SWAP_WANT" "$SWAPFILE" && chmod 0600 "$SWAPFILE" && mkswap -q "$SWAPFILE"; then
+        SWAP_HAVE=$SWAP_WANT
+    else
+        log "WARNING: could not create the swapfile; the guest runs without swap"
+        rm -f "$SWAPFILE"
+    fi
+fi
+# fstab mirrors what is actually on disk, so a removed or failed swapfile
+# does not leave a swap unit failing on every boot.
+if [ "$SWAP_HAVE" -eq 0 ]; then
+    sed -i "\|^${SWAPFILE} |d" /etc/fstab
+else
+    grep -q "^${SWAPFILE} " /etc/fstab || echo "${SWAPFILE} none swap sw 0 0" >> /etc/fstab
+    swap_active || swapon "$SWAPFILE" || log "WARNING: swapon $SWAPFILE failed; the guest runs without swap"
+fi
 
 # ── Rootless Docker for the agent ────────────────────────────────────────────
 # Lima's `mode: user` scripts run as limaadmin, so the agent's rootless setup is

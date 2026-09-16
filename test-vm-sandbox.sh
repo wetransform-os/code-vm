@@ -696,6 +696,41 @@ else
     fail "TasksMax is applied to the agent slice"
 fi
 
+# The stock image mounts /tmp as a tmpfs sized at half of RAM, so agent
+# scratch there (Claude Code's own scratchpad, for one) competes with the
+# workload for memory. Provisioning masks tmp.mount and unmounts the tmpfs
+# on the very boot it first runs, so a fresh VM never has to be restarted
+# for /tmp to land on disk.
+# -T resolves the filesystem containing /tmp: once the tmpfs is gone, /tmp is
+# a plain directory on the root filesystem and is no longer a mount point.
+TMP_FSTYPE=$(adm findmnt -no FSTYPE -T /tmp 2>/dev/null || echo "")
+if [ -n "$TMP_FSTYPE" ] && [ "$TMP_FSTYPE" != "tmpfs" ]; then
+    pass "/tmp is disk-backed, not tmpfs (on $TMP_FSTYPE)"
+else
+    fail "/tmp is disk-backed, not tmpfs (got '${TMP_FSTYPE:-nothing}')"
+fi
+
+if adm test -e /run/sandbox/tmp-unmount-deferred; then
+    fail "the /tmp tmpfs was unmounted during provisioning, not deferred to next boot"
+else
+    pass "the /tmp tmpfs was unmounted during provisioning, not deferred to next boot"
+fi
+
+# The image ships without swap, so a memory burst goes straight to the OOM
+# killer, which picks dockerd first. The config's swap size (default 4GiB)
+# becomes /swapfile.
+if adm swapon --show=NAME --noheadings | grep -qx /swapfile; then
+    pass "the guest swapfile is active"
+else
+    fail "the guest swapfile is active"
+fi
+
+if adm grep -q "^/swapfile none swap" /etc/fstab; then
+    pass "the swapfile is in fstab"
+else
+    fail "the swapfile is in fstab"
+fi
+
 echo ""
 echo "── Workspace file ownership ──────────────────────────────────────"
 

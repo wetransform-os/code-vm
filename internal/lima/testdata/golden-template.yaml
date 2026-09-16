@@ -95,6 +95,7 @@ provision:
     AGENT_GID=1000
     EXTRA_ALLOWED_DOMAINS="registry.example.com raw.githubusercontent.com"
     CONTAINER_PROXY=false
+    SWAP_SIZE=4GiB
 - mode: data
   path: "/usr/local/share/sandbox-profiles/manifest.env"
   owner: "root:root"

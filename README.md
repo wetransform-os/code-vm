@@ -87,6 +87,7 @@ vmType:                       # hypervisor; empty picks the host's — see below
 cpus: 4
 memory: 12GiB
 disk: 100GiB
+swap: 4GiB                    # guest swapfile; 0B disables it — see below
 extraDomains:                 # added to the Squid allowlist
   - registry.mycompany.com
 containerProxy: false         # see below
@@ -96,6 +97,16 @@ Nothing is read from the project directory. `code-vm` deliberately trusts no
 file inside a workspace: the workspace is mounted writable and is exactly what
 the agent edits, so anything there is agent-authored input. The host config is
 the whole knob surface.
+
+### `swap`
+
+The guest image ships without swap and mounts `/tmp` as a tmpfs sized at half
+of RAM. Under a memory burst (Gradle daemons plus Testcontainers, with agent
+scratch piling up in `/tmp`) the guest went straight to the OOM killer, which
+kills `dockerd` first and leaves the VM unresponsive. `code-vm` therefore
+provisions a swapfile of this size on the guest disk and moves `/tmp` onto the
+root filesystem, so a burst degrades into slowness instead. `0B` disables the
+swapfile; `/tmp` is always disk-backed.
 
 ### `vmType`
 
