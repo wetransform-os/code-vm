@@ -15,6 +15,9 @@ func TestDefaultValues(t *testing.T) {
 	if d.ContainerProxy {
 		t.Error("containerProxy must default to false")
 	}
+	if d.Swap != "4GiB" {
+		t.Errorf("Swap = %q, want 4GiB: the guest has no swap otherwise, and a build burst then OOM-kills dockerd", d.Swap)
+	}
 }
 
 func TestLoadMissingFileReturnsDefaults(t *testing.T) {
@@ -69,6 +72,9 @@ func TestValidate(t *testing.T) {
 		{"zero cpus", func(c *Config) { c.ProjectsRoot = "/p"; c.CPUs = 0 }, true},
 		{"bad memory", func(c *Config) { c.ProjectsRoot = "/p"; c.Memory = "lots" }, true},
 		{"bad disk", func(c *Config) { c.ProjectsRoot = "/p"; c.Disk = "12" }, true},
+		{"bad swap", func(c *Config) { c.ProjectsRoot = "/p"; c.Swap = "4G" }, true},
+		{"empty swap", func(c *Config) { c.ProjectsRoot = "/p"; c.Swap = "" }, true},
+		{"zero swap disables", func(c *Config) { c.ProjectsRoot = "/p"; c.Swap = "0B" }, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

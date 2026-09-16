@@ -455,3 +455,17 @@ func TestRenderAllowDomains(t *testing.T) {
 		t.Error("nil AllowDomains must fall back to the config's extraDomains")
 	}
 }
+
+// provision.env carries the swap size so provision-system.sh can size the
+// guest swapfile; "0B" is how a config opts out.
+func TestRenderSwapSize(t *testing.T) {
+	c := testConfig()
+	c.Swap = "2GiB"
+	out, err := Render(c, testParams(nil))
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if !strings.Contains(out, "SWAP_SIZE=2GiB\n") {
+		t.Errorf("rendered template missing SWAP_SIZE=2GiB")
+	}
+}
