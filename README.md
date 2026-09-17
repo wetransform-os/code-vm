@@ -105,8 +105,9 @@ of RAM. Under a memory burst (Gradle daemons plus Testcontainers, with agent
 scratch piling up in `/tmp`) the guest went straight to the OOM killer, which
 kills `dockerd` first and leaves the VM unresponsive. `code-vm` therefore
 provisions a swapfile of this size on the guest disk and moves `/tmp` onto the
-root filesystem, so a burst degrades into slowness instead. `0B` disables the
-swapfile; `/tmp` is always disk-backed.
+root filesystem, so a burst degrades into slowness instead. The size must be
+at least `1MiB` and smaller than `disk`; `0B` disables the swapfile. `/tmp` is
+always disk-backed.
 
 ### `vmType`
 

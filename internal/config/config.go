@@ -171,6 +171,17 @@ func (c Config) Validate() error {
 	if swap >= disk {
 		return fmt.Errorf("swap (%s) must be smaller than disk (%s)", c.Swap, c.Disk)
 	}
+	// The guest script compares the byte count with bash's `[`, which stops
+	// at MaxInt64 and would silently skip every swap step above it.
+	if swap > math.MaxInt64 {
+		return fmt.Errorf("swap (%s) is too large", c.Swap)
+	}
+	// mkswap refuses areas under ten pages (40 KiB on 4 KiB pages, 640 KiB
+	// on 64 KiB pages); a round minimum above both keeps a host-accepted
+	// value from being one the guest can never format.
+	if swap != 0 && swap < minSwap {
+		return fmt.Errorf("swap (%s) must be at least 1MiB, or 0B to disable", c.Swap)
+	}
 	for i, d := range c.ExtraDomains {
 		if err := ValidateDomain(d); err != nil {
 			return fmt.Errorf("extraDomains[%d]: %w", i, err)
@@ -193,6 +204,9 @@ func (c Config) Validate() error {
 	}
 	return nil
 }
+
+// minSwap is the smallest nonzero swap size Validate accepts.
+const minSwap = 1 << 20
 
 // sizeUnits maps the suffixes sizeRe accepts to bytes.
 var sizeUnits = map[string]uint64{"B": 1, "KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30, "TiB": 1 << 40}
