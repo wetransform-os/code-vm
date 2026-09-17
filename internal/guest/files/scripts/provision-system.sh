@@ -161,7 +161,14 @@ systemctl daemon-reload
 # is busy, it is left alone (a lazy unmount would let its holders keep
 # writing into an orphaned tmpfs) and takes effect on the next boot; the
 # marker tells the integration suite which of the two happened.
+#
+# The mask's result is checked rather than assumed: the unmount below would
+# make this boot look right even if the mask silently failed, and the tmpfs
+# would be back on the next one.
 systemctl mask tmp.mount > /dev/null 2>&1 || true
+if [ "$(systemctl is-enabled tmp.mount 2> /dev/null || true)" != "masked" ]; then
+    log "WARNING: could not mask tmp.mount; /tmp returns to tmpfs on the next boot"
+fi
 install -d -m 0755 /run/sandbox
 rm -f /run/sandbox/tmp-unmount-deferred
 if [ "$(findmnt -no FSTYPE /tmp 2> /dev/null || true)" = "tmpfs" ]; then
@@ -187,10 +194,16 @@ fi
 # effect on the next start. Swap is a mitigation, not a prerequisite, so
 # failing to set it up is logged and provisioning continues.
 SWAPFILE=/swapfile
-SWAP_WANT=$(numfmt --from=iec-i "${SWAP_SIZE%B}")
 SWAP_HAVE=0
 [ -f "$SWAPFILE" ] && SWAP_HAVE=$(stat -c %s "$SWAPFILE")
 swap_active() { swapon --show=NAME --noheadings | grep -qx "$SWAPFILE"; }
+# The host bounds the value, so this only fails on a hand-edited provision.env.
+# An unparseable size is not a request for no swap: keep whatever exists
+# rather than delete it, and skip the reconcile below by wanting what we have.
+if ! SWAP_WANT=$(numfmt --from=iec-i "${SWAP_SIZE%B}" 2> /dev/null); then
+    log "WARNING: cannot parse SWAP_SIZE=${SWAP_SIZE}; leaving swap as it is"
+    SWAP_WANT=$SWAP_HAVE
+fi
 if [ "$SWAP_WANT" -eq 0 ] || [ "$SWAP_HAVE" -ne "$SWAP_WANT" ]; then
     if [ -f "$SWAPFILE" ]; then
         if swap_active && ! swapoff "$SWAPFILE"; then

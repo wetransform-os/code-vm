@@ -3,9 +3,11 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -154,6 +156,21 @@ func (c Config) Validate() error {
 	if !sizeRe.MatchString(c.Swap) {
 		return fmt.Errorf("swap must look like \"4GiB\" (or \"0B\" to disable), got %q", c.Swap)
 	}
+	// The swapfile lives on the guest disk, so it must fit there with room
+	// to spare. Checking it here also bounds the value: the guest converts
+	// it with numfmt, which rejects anything beyond 64 bits and would abort
+	// provisioning under set -e, so this must never pass an overflow along.
+	swap, err := parseSize(c.Swap)
+	if err != nil {
+		return fmt.Errorf("swap: %w", err)
+	}
+	disk, err := parseSize(c.Disk)
+	if err != nil {
+		return fmt.Errorf("disk: %w", err)
+	}
+	if swap >= disk {
+		return fmt.Errorf("swap (%s) must be smaller than disk (%s)", c.Swap, c.Disk)
+	}
 	for i, d := range c.ExtraDomains {
 		if err := ValidateDomain(d); err != nil {
 			return fmt.Errorf("extraDomains[%d]: %w", i, err)
@@ -175,6 +192,24 @@ func (c Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// sizeUnits maps the suffixes sizeRe accepts to bytes.
+var sizeUnits = map[string]uint64{"B": 1, "KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30, "TiB": 1 << 40}
+
+// parseSize converts a sizeRe-shaped string to bytes, rejecting values that
+// do not fit in 64 bits.
+func parseSize(s string) (uint64, error) {
+	m := sizeRe.FindStringSubmatch(s)
+	if m == nil {
+		return 0, fmt.Errorf("not a size: %q", s)
+	}
+	unit := sizeUnits[m[1]]
+	n, err := strconv.ParseUint(strings.TrimSuffix(s, m[1]), 10, 64)
+	if err != nil || n > math.MaxUint64/unit {
+		return 0, fmt.Errorf("size %q is too large", s)
+	}
+	return n * unit, nil
 }
 
 // ValidateDomain reports whether d is usable as an allowlist entry.
