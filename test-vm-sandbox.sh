@@ -716,6 +716,14 @@ else
     pass "the /tmp tmpfs was unmounted during provisioning, not deferred to next boot"
 fi
 
+# The same-boot unmount would make this boot look right even if the mask had
+# failed, so the persistent half is asserted directly.
+if [ "$(adm systemctl is-enabled tmp.mount 2> /dev/null)" = "masked" ]; then
+    pass "tmp.mount is masked, so /tmp stays disk-backed across reboots"
+else
+    fail "tmp.mount is masked, so /tmp stays disk-backed across reboots"
+fi
+
 # The image ships without swap, so a memory burst goes straight to the OOM
 # killer, which picks dockerd first. The config's swap size (default 4GiB)
 # becomes /swapfile.
@@ -887,9 +895,31 @@ echo "── Restart hygiene ─────────────────
 # restart must revert to allowlist and leave the guest holding only what the
 # host config puts back.
 
+# The two restarts here double as the swap transitions: the config's swap
+# size reaches the guest through provision.env on every start, so disabling
+# swap across the first restart and resizing it across the second exercises
+# the destructive paths (swapoff, delete, recreate) with no extra reboots.
+# swap_state prints "<file size or absent> <active|inactive> <fstab|nofstab>".
+swap_state() {
+    # shellcheck disable=SC2016  # expands in the guest, not here
+    adm sh -c 'printf "%s %s %s\n" \
+        "$(stat -c %s /swapfile 2>/dev/null || echo absent)" \
+        "$(swapon --show=NAME --noheadings | grep -qx /swapfile && echo active || echo inactive)" \
+        "$(grep -q "^/swapfile " /etc/fstab && echo fstab || echo nofstab)"'
+}
+cp "$CONFIG_FILE" "$CONFIG_FILE.restart-backup"
+yq -i '.swap = "0B"' "$CONFIG_FILE"
+
 "${CODE_VM_ARGS[@]}" firewall audit > /dev/null
 "${CODE_VM_ARGS[@]}" stop > /dev/null 2>&1
 "${CODE_VM_ARGS[@]}" start > /dev/null 2>&1
+
+SWAP_STATE=$(swap_state)
+if [ "$SWAP_STATE" = "absent inactive nofstab" ]; then
+    pass "swap 0B removes the swapfile, its swap entry and its fstab line"
+else
+    fail "swap 0B removes the swapfile, its swap entry and its fstab line (got: $SWAP_STATE)"
+fi
 
 if "${CODE_VM_ARGS[@]}" firewall | grep -qx allowlist; then
     pass "firewall mode reverts to allowlist on VM restart"
@@ -912,10 +942,18 @@ assert_ok "settings stay locked after restart" \
 # Host-config domains must survive a restart — that is the difference from the
 # tmpfs-only mechanism this replaced. init-firewall.sh writes the fragment at
 # boot from provision.env, so the domain is live before any invocation.
-cp "$CONFIG_FILE" "$CONFIG_FILE.restart-backup"
+# Swap goes from disabled to a non-default size across the same restart.
+yq -i '.swap = "1GiB"' "$CONFIG_FILE"
 "${CODE_VM_ARGS[@]}" allow --yes example.org > /dev/null 2>&1
 "${CODE_VM_ARGS[@]}" stop > /dev/null 2>&1
 "${CODE_VM_ARGS[@]}" start > /dev/null 2>&1
+
+SWAP_STATE=$(swap_state)
+if [ "$SWAP_STATE" = "1073741824 active fstab" ]; then
+    pass "swap 1GiB creates a swapfile of that size, active and in fstab"
+else
+    fail "swap 1GiB creates a swapfile of that size, active and in fstab (got: $SWAP_STATE)"
+fi
 
 if adm test -f /run/sandbox/squid-allow.d/10-host-config.conf; then
     pass "host-config fragment is rebuilt at boot"

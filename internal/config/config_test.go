@@ -75,6 +75,12 @@ func TestValidate(t *testing.T) {
 		{"bad swap", func(c *Config) { c.ProjectsRoot = "/p"; c.Swap = "4G" }, true},
 		{"empty swap", func(c *Config) { c.ProjectsRoot = "/p"; c.Swap = "" }, true},
 		{"zero swap disables", func(c *Config) { c.ProjectsRoot = "/p"; c.Swap = "0B" }, false},
+		// Both would fail in the guest instead of here: the first overflows
+		// numfmt's conversion (aborting provisioning under set -e), the
+		// second can never be allocated on the guest disk.
+		{"swap too large to convert", func(c *Config) { c.ProjectsRoot = "/p"; c.Swap = "999999999999999999999TiB" }, true},
+		{"swap not smaller than disk", func(c *Config) { c.ProjectsRoot = "/p"; c.Disk = "100GiB"; c.Swap = "100GiB" }, true},
+		{"swap smaller than disk", func(c *Config) { c.ProjectsRoot = "/p"; c.Disk = "100GiB"; c.Swap = "102399MiB" }, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
