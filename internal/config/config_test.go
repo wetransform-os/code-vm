@@ -81,6 +81,14 @@ func TestValidate(t *testing.T) {
 		{"swap too large to convert", func(c *Config) { c.ProjectsRoot = "/p"; c.Swap = "999999999999999999999TiB" }, true},
 		{"swap not smaller than disk", func(c *Config) { c.ProjectsRoot = "/p"; c.Disk = "100GiB"; c.Swap = "100GiB" }, true},
 		{"swap smaller than disk", func(c *Config) { c.ProjectsRoot = "/p"; c.Disk = "100GiB"; c.Swap = "102399MiB" }, false},
+		// The guest compares the value with bash's `[`, which stops at
+		// MaxInt64; anything above is silently skipped there.
+		{"swap above MaxInt64", func(c *Config) { c.ProjectsRoot = "/p"; c.Disk = "16777215TiB"; c.Swap = "8388608TiB" }, true},
+		{"swap at MaxInt64 bound", func(c *Config) { c.ProjectsRoot = "/p"; c.Disk = "16777215TiB"; c.Swap = "8388607TiB" }, false},
+		// mkswap refuses tiny areas; a size the guest can never format
+		// must not pass here, while 0B stays the disable value.
+		{"swap below minimum", func(c *Config) { c.ProjectsRoot = "/p"; c.Swap = "1023KiB" }, true},
+		{"swap at minimum", func(c *Config) { c.ProjectsRoot = "/p"; c.Swap = "1MiB" }, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
