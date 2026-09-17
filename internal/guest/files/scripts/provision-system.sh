@@ -224,13 +224,20 @@ if [ "$SWAP_WANT" -ne 0 ] && [ "$SWAP_HAVE" -eq 0 ]; then
         rm -f "$SWAPFILE"
     fi
 fi
-# fstab mirrors what is actually on disk, so a removed or failed swapfile
-# does not leave a swap unit failing on every boot.
+# Activate first, persist second: fstab mirrors what is actually working,
+# not what was attempted. An entry for a swapfile that fails to activate
+# would give every later boot a failing swap unit, and since the file would
+# already be the right size, provisioning would never rebuild it either. So
+# on activation failure the file goes too, and the next boot starts clean.
+if [ "$SWAP_HAVE" -ne 0 ] && ! swap_active && ! swapon "$SWAPFILE"; then
+    log "WARNING: swapon $SWAPFILE failed; removing it, the guest runs without swap"
+    rm -f "$SWAPFILE"
+    SWAP_HAVE=0
+fi
 if [ "$SWAP_HAVE" -eq 0 ]; then
     sed -i "\|^${SWAPFILE} |d" /etc/fstab
 else
     grep -q "^${SWAPFILE} " /etc/fstab || echo "${SWAPFILE} none swap sw 0 0" >> /etc/fstab
-    swap_active || swapon "$SWAPFILE" || log "WARNING: swapon $SWAPFILE failed; the guest runs without swap"
 fi
 
 # ── Rootless Docker for the agent ────────────────────────────────────────────
