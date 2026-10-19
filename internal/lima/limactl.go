@@ -158,6 +158,21 @@ func (c Client) InstanceDir(ctx context.Context) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// SSHConfigFile returns the path of the ssh config Lima writes for the
+// instance, which authenticates as limaadmin to the instance's forwarded sshd.
+func (c Client) SSHConfigFile(ctx context.Context) (string, error) {
+	out, err := c.R.Output(ctx, "list", c.instance(), "--format", "{{.SSHConfigFile}}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// SSHHost is the host alias the instance's ssh config defines.
+func (c Client) SSHHost() string {
+	return "lima-" + c.instance()
+}
+
 // ResolveConfigInto resolves a rendered template into a self-contained
 // instance config at dst. Instance configs must have `base` resolved into
 // concrete fields (observed: a stored config with `base:` fails validation

@@ -847,6 +847,33 @@ else
     pass "guest Squid port is not forwarded to the host"
 fi
 
+# `forward` is the explicit, temporary opening: a Docker-published guest port
+# must reach the host's loopback, and only its loopback, until it is stopped.
+agent docker run -d --rm --name code-vm-forward -p 18080:80 nginx:alpine > /dev/null 2>&1
+sleep 3
+"${CODE_VM_ARGS[@]}" forward 18081:18080 > /dev/null 2>&1 &
+FORWARD_PID=$!
+sleep 3
+if curl -fsS -o /dev/null --max-time 10 --noproxy '*' http://127.0.0.1:18081; then
+    pass "forward makes a guest port reachable on the host"
+else
+    fail "forward makes a guest port reachable on the host"
+fi
+if ss -tln 2> /dev/null | grep ':18081 ' | grep -qv '127.0.0.1:18081 '; then
+    fail "forward binds only the host loopback"
+else
+    pass "forward binds only the host loopback"
+fi
+kill -INT "$FORWARD_PID" 2> /dev/null
+wait "$FORWARD_PID" 2> /dev/null
+if ss -tln 2> /dev/null | grep -q ':18081 '; then
+    fail "stopping forward closes the host port"
+else
+    pass "stopping forward closes the host port"
+fi
+agent docker rm -f code-vm-forward > /dev/null 2>&1
+assert_fails "forward rejects a bind address" "${CODE_VM_ARGS[@]}" forward 0.0.0.0:18081:18080
+
 echo ""
 echo "── Firewall modes ────────────────────────────────────────────────"
 

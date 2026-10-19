@@ -40,6 +40,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newAllowCmd())
 	root.AddCommand(newProfileCmd())
 	root.AddCommand(newSecretsCmd())
+	root.AddCommand(newForwardCmd())
 	return root
 }
 
