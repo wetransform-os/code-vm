@@ -117,6 +117,35 @@ host_uid_of() { stat -c '%u' "$1" 2> /dev/null || stat -f '%u' "$1"; }
 # Run a command as the agent user through the real CLI.
 agent() { "${CODE_VM_ARGS[@]}" -- "$@"; }
 
+# Print the host's listening TCP sockets as ADDR:PORT, one per line. `ss` is
+# Linux-only and lsof is what macOS ships; a probe that cannot run returns
+# non-zero so that a listener check never passes on an empty answer.
+host_listeners() {
+    if command -v ss > /dev/null 2>&1; then
+        ss -tln | awk 'NR > 1 { print $4 }'
+    elif command -v lsof > /dev/null 2>&1; then
+        # lsof exits 1 when nothing matches, which is a valid empty answer.
+        { lsof -nP -iTCP -sTCP:LISTEN -F n || [ $? -eq 1 ]; } | sed -n 's/^n//p'
+    else
+        echo "[test] neither ss nor lsof is available to list host listeners" >&2
+        return 1
+    fi
+}
+
+# assert_listeners DESC PORT PATTERN: every host listener on PORT must match
+# the extended regex PATTERN; "^$" demands that nothing listens on PORT. A
+# host that cannot be inspected fails the check instead of passing it.
+assert_listeners() {
+    local desc="$1" port="$2" pattern="$3" all
+    if ! all=$(host_listeners); then
+        fail "$desc (cannot list host listeners)"
+    elif grep -E ":$port\$" <<< "$all" | grep -Eqv "$pattern"; then
+        fail "$desc"
+    else
+        pass "$desc"
+    fi
+}
+
 assert_ok() {
     local desc="$1"
     shift
@@ -841,11 +870,7 @@ echo "── Host exposure ─────────────────�
 
 # The portForwards ignore rule must cover wildcard binds: without guestIP
 # 0.0.0.0 + proto any, Lima forwarded the guest's Squid port to the host.
-if ss -tln 2> /dev/null | grep -q ':3128 '; then
-    fail "guest Squid port is not forwarded to the host"
-else
-    pass "guest Squid port is not forwarded to the host"
-fi
+assert_listeners "guest Squid port is not forwarded to the host" 3128 '^$'
 
 # `forward` is the explicit, temporary opening: a Docker-published guest port
 # must reach the host's loopback, and only its loopback, until it is stopped.
@@ -859,18 +884,10 @@ if curl -fsS -o /dev/null --max-time 10 --noproxy '*' http://127.0.0.1:18081; th
 else
     fail "forward makes a guest port reachable on the host"
 fi
-if ss -tln 2> /dev/null | grep ':18081 ' | grep -qv '127.0.0.1:18081 '; then
-    fail "forward binds only the host loopback"
-else
-    pass "forward binds only the host loopback"
-fi
+assert_listeners "forward binds only the host loopback" 18081 '^127\.0\.0\.1:18081$'
 kill -INT "$FORWARD_PID" 2> /dev/null
 wait "$FORWARD_PID" 2> /dev/null
-if ss -tln 2> /dev/null | grep -q ':18081 '; then
-    fail "stopping forward closes the host port"
-else
-    pass "stopping forward closes the host port"
-fi
+assert_listeners "stopping forward closes the host port" 18081 '^$'
 agent docker rm -f code-vm-forward > /dev/null 2>&1
 assert_fails "forward rejects a bind address" "${CODE_VM_ARGS[@]}" forward 0.0.0.0:18081:18080
 
