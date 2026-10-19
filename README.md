@@ -71,6 +71,7 @@ code-vm                          # interactive shell
 | `code-vm recreate` | Delete and rebuild the guest from scratch |
 | `code-vm proxy-log [all\|denied\|allowed\|follow]` | Read the Squid access log |
 | `code-vm allow [domain...]` | Add domains to the allowlist and apply them live |
+| `code-vm forward <port>...` | Reach guest ports on the host's localhost until Ctrl-C |
 | `code-vm secrets` | List secrets/vars the active profiles declare, mapped or not |
 | `code-vm doctor` | Check host prerequisites |
 
@@ -182,6 +183,28 @@ Domains a project needs belong in its README, or in each developer's config.
 Removing a domain from the config revokes it on the next invocation; the guest
 fragment is rewritten to match, rather than keeping stale entries alive for the
 VM's lifetime.
+
+### Reaching guest servers from the host
+
+Nothing in the guest is reachable from the host by default: Lima's automatic
+port forwarding is switched off, so a dev server, or the Squid and Docker
+ports, never appear on the host on their own. To open a server in your own
+browser, forward its port explicitly:
+
+```bash
+code-vm forward 8080             # guest :8080 -> http://localhost:8080
+code-vm forward 3000:5173 8080   # host :3000 -> guest :5173, plus :8080
+```
+
+The forward runs in the foreground over its own SSH connection to the VM and
+closes on Ctrl-C; nothing is persisted. The host side always binds `127.0.0.1`, so the
+port is never exposed to the network the host is on. The guest side connects
+to the guest's loopback, which reaches servers bound to `127.0.0.1` or
+`0.0.0.0` as well as Docker-published ports (`docker run -p 8080:80`). The VM
+must already be running; `forward` does not boot it.
+
+What you open is served by the agent: treat a forwarded page like any other
+agent-authored content, and stop the forward when you are done.
 
 ### `containerProxy`
 
