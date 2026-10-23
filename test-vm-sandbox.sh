@@ -382,6 +382,20 @@ assert_ok "config apply succeeds once the directory is real again" \
     "${CODE_VM_ARGS[@]}" config apply
 adm rm -rf "$CANARY" /tmp/code-vm-lock-dir
 
+# A missing .claude is created by the lock step itself; it must come out
+# agent-owned (Claude Code writes its own state there) with the settings
+# locked inside it.
+agent bash -c "cd ~ && mv .claude .claude.real"
+assert_ok "config apply creates a missing .claude" \
+    "${CODE_VM_ARGS[@]}" config apply
+assert_ok "the created .claude is agent-owned" \
+    bash -c "[ \"\$(limactl shell $INSTANCE sudo stat -c '%F:%U:%a' /home/$AGENT_USER/.claude)\" = 'directory:$AGENT_USER:755' ]"
+assert_ok "settings.json inside it is locked" \
+    bash -c "[ \"\$(limactl shell $INSTANCE sudo stat -c '%F:%U:%a' $SETTINGS)\" = 'regular file:root:444' ]"
+agent bash -c "cd ~ && rm -rf .claude && mv .claude.real .claude"
+assert_ok "config apply succeeds with the original directory restored" \
+    "${CODE_VM_ARGS[@]}" config apply
+
 echo ""
 echo "── Agent CLIs ────────────────────────────────────────────────────"
 
