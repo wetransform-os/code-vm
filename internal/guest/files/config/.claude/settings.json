@@ -52,7 +52,6 @@
       "Bash(ssh *)",
       "Bash(scp *)",
       "Bash(rsync *)",
-      "Bash(git push *)",
       "Bash(git remote *)",
       "Bash(iptables *)",
       "Bash(kill *)",
