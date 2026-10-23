@@ -152,4 +152,15 @@ done < <(find "$CONFIG_SRC" -type f | sort)
 echo '{}' > "$STAGE/local"
 place "$STAGE/local" "$SETTINGS_LOCAL_REL"
 
+# Postcondition. The agent owns its home, so at any moment — not only during
+# this run — it can rename .claude aside and create a fresh one; nothing
+# root-owned inside a directory it owns can stop that, and the egress
+# allowlist, not this lock, is the sandbox's containment boundary. What this
+# script can promise is to never report success for a tree that is no
+# longer the one at the canonical path: a swap that raced the writes above
+# fails the run loudly instead of passing silently.
+if [ "$(stat -c %i .)" != "$(stat -c %i "$AGENT_HOME/$(dirname "$SETTINGS_REL")")" ]; then
+    die "$AGENT_HOME/$(dirname "$SETTINGS_REL") was replaced while it was being locked; rerun"
+fi
+
 echo "[lock-settings] Config restored from canonical and locked"
