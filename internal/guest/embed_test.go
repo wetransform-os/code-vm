@@ -2,6 +2,7 @@ package guest
 
 import (
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -85,4 +86,32 @@ func TestInstallUserFileScriptIsDelivered(t *testing.T) {
 		}
 	}
 	t.Error("install-user-file.sh is not delivered to the guest")
+}
+
+// ConfigFiles feeds the live re-apply path (`code-vm config apply`), which
+// must deliver exactly what lock-settings.sh consumes at boot: the canonical
+// config tree, and nothing that only the boot path may touch (scripts, units).
+func TestConfigFilesSelectsOnlyTheCanonicalConfigTree(t *testing.T) {
+	files, err := ConfigFiles()
+	if err != nil {
+		t.Fatalf("ConfigFiles: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatal("ConfigFiles returned nothing")
+	}
+	found := false
+	for _, f := range files {
+		if !strings.HasPrefix(f.Path, ConfigRoot+"/") {
+			t.Errorf("%s is outside the config tree %s", f.Path, ConfigRoot)
+		}
+		if f.Path == ConfigRoot+"/.claude/settings.json" {
+			found = true
+			if f.Permissions != "0444" {
+				t.Errorf("settings.json permissions = %s, want 0444", f.Permissions)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("settings.json missing from %v", files)
+	}
 }

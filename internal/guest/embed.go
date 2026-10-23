@@ -32,6 +32,11 @@ func LimaTemplate() (string, error) {
 	return string(b), nil
 }
 
+// ConfigRoot is where the canonical config tree lives in the guest. It mirrors
+// the agent's home; lock-settings.sh copies it there and locks every file on
+// each boot, and `code-vm config apply` re-delivers it to a running VM.
+const ConfigRoot = "/usr/local/share/sandbox-config"
+
 // guestPath maps an embedded path to its install location and permissions.
 // An empty path means the file is not delivered to the guest.
 func guestPath(p string) (string, string) {
@@ -46,7 +51,7 @@ func guestPath(p string) (string, string) {
 		return "/etc/systemd/system/" + rel, "0644"
 	}
 	if rel, ok := trimPrefix(p, "files/config/"); ok {
-		return "/usr/local/share/sandbox-config/" + rel, "0444"
+		return ConfigRoot + "/" + rel, "0444"
 	}
 	return "", ""
 }
@@ -84,5 +89,22 @@ func DataFiles() ([]DataFile, error) {
 		return nil, err
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, nil
+}
+
+// ConfigFiles returns the subset of DataFiles that lands under ConfigRoot:
+// what lock-settings.sh consumes. Scripts and units are left out on purpose;
+// they are only ever installed by Lima before a boot.
+func ConfigFiles() ([]DataFile, error) {
+	all, err := DataFiles()
+	if err != nil {
+		return nil, err
+	}
+	var out []DataFile
+	for _, f := range all {
+		if strings.HasPrefix(f.Path, ConfigRoot+"/") {
+			out = append(out, f)
+		}
+	}
 	return out, nil
 }
