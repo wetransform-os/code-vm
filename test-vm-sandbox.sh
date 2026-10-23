@@ -158,6 +158,26 @@ assert_fails() {
     if "$@" > /dev/null 2>&1; then fail "$desc (command unexpectedly succeeded)"; else pass "$desc"; fi
 }
 
+# with_deadline SECS CMD...: run CMD, failing it if it has not finished within
+# SECS. Portable: macOS ships no `timeout`, so a background watchdog kills the
+# command instead.
+with_deadline() {
+    local secs="$1" pid wd rc
+    shift
+    "$@" &
+    pid=$!
+    (
+        sleep "$secs"
+        kill "$pid" 2> /dev/null
+    ) &
+    wd=$!
+    wait "$pid"
+    rc=$?
+    kill "$wd" 2> /dev/null
+    wait "$wd" 2> /dev/null || true
+    return "$rc"
+}
+
 echo ""
 echo "================================================================"
 echo "  VM Sandbox Test Suite"
@@ -381,6 +401,15 @@ agent bash -c "cd ~ && rm .claude && mv .claude.real .claude"
 assert_ok "config apply succeeds once the directory is real again" \
     "${CODE_VM_ARGS[@]}" config apply
 adm rm -rf "$CANARY" /tmp/code-vm-lock-dir
+
+# A FIFO planted at settings.json must not stall the lock step: with no
+# writer, opening it would block for good, and at boot that means a VM that
+# never comes up. The deadline is generous; a hang is what is being ruled out.
+agent bash -c "cd ~/.claude && rm -f settings.json && mkfifo settings.json"
+assert_ok "config apply completes with a FIFO planted at settings.json" \
+    with_deadline 120 "${CODE_VM_ARGS[@]}" config apply
+assert_ok "the FIFO was replaced by a regular locked file" \
+    bash -c "[ \"\$(limactl shell $INSTANCE sudo stat -c '%F:%U:%a' $SETTINGS)\" = 'regular file:root:444' ]"
 
 # A missing .claude is created by the lock step itself; it must come out
 # agent-owned (Claude Code writes its own state there) with the settings
