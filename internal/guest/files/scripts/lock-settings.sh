@@ -104,15 +104,20 @@ place() {
 # Claude Code records plugin enablement in settings.json under enabledPlugins.
 # Replacing the file would silently disable every plugin the user installed,
 # even though the plugin files persist on the guest disk. Capture it from a
-# staged copy taken without following symlinks: the copy is inspected in the
-# root-only staging directory, so the agent cannot race the read.
+# snapshot taken into the root-only staging directory, where the agent cannot
+# race the read. The snapshot is the one place this script opens an entry
+# the agent controls, so the open itself must be harmless whatever the entry
+# turned into since the last look: nofollow refuses a symlink, nonblock makes
+# a FIFO (which would otherwise hang the boot until something writes to it)
+# return at once, and the byte cap bounds what a writer on the other end can
+# push into staging. Anything that is not readable JSON simply yields no
+# previous plugins — the agent can only ever lose its own enablement.
 PREV_ENABLED_PLUGINS='{}'
 ensure_dir "$(dirname "$SETTINGS_REL")"
-if [ -e "$(basename "$SETTINGS_REL")" ] || [ -L "$(basename "$SETTINGS_REL")" ]; then
-    cp -P "./$(basename "$SETTINGS_REL")" "$STAGE/previous" 2> /dev/null || true
-    if [ -f "$STAGE/previous" ] && [ ! -L "$STAGE/previous" ]; then
-        PREV_ENABLED_PLUGINS="$(jq -c '.enabledPlugins // {}' "$STAGE/previous" 2> /dev/null || echo '{}')"
-    fi
+dd if="./$(basename "$SETTINGS_REL")" of="$STAGE/previous" bs=1M count=4 \
+    iflag=nonblock,nofollow status=none 2> /dev/null || true
+if [ -s "$STAGE/previous" ]; then
+    PREV_ENABLED_PLUGINS="$(jq -c '.enabledPlugins // {}' "$STAGE/previous" 2> /dev/null || echo '{}')"
 fi
 
 n=0
