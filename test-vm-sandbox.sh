@@ -411,6 +411,17 @@ assert_ok "config apply completes with a FIFO planted at settings.json" \
 assert_ok "the FIFO was replaced by a regular locked file" \
     bash -c "[ \"\$(limactl shell $INSTANCE sudo stat -c '%F:%U:%a' $SETTINGS)\" = 'regular file:root:444' ]"
 
+# Whatever the agent leaves in settings.json feeds the enabledPlugins
+# snapshot. A non-object there used to fail the jq merge and, with set -e,
+# the whole lock step — at boot, for good, since the file persists.
+agent bash -c "cd ~/.claude && rm -f settings.json && echo '{\"enabledPlugins\":[\"x\"]}' > settings.json"
+assert_ok "config apply completes with a non-object enabledPlugins planted" \
+    "${CODE_VM_ARGS[@]}" config apply
+assert_ok "the planted value was not carried into the locked file" \
+    bash -c "[ \"\$(limactl shell $INSTANCE sudo jq -c '.enabledPlugins // {}' $SETTINGS)\" = '{}' ]"
+assert_ok "settings.json is locked again" \
+    bash -c "[ \"\$(limactl shell $INSTANCE sudo stat -c '%F:%U:%a' $SETTINGS)\" = 'regular file:root:444' ]"
+
 # A missing .claude is created by the lock step itself; it must come out
 # agent-owned (Claude Code writes its own state there) with the settings
 # locked inside it.
