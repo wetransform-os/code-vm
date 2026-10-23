@@ -38,9 +38,9 @@ func TestConfigApplyPushesCanonicalTreeAndLocks(t *testing.T) {
 	}
 	for _, want := range []string{
 		"install -D -m 0444 -o root -g root",
-		guest.ConfigRoot + ".new/.claude/settings.json",
-		"mv -T " + guest.ConfigRoot + ".new " + guest.ConfigRoot,
-		"sudo /usr/local/lib/sandbox/lock-settings.sh",
+		guest.ConfigRoot + ".new-",
+		"mv -T --exchange",
+		"/usr/local/lib/sandbox/lock-settings.sh",
 	} {
 		if !ranAny(r.calls, want) {
 			t.Errorf("missing guest command %q in %v", want, r.calls)
@@ -79,7 +79,10 @@ func TestConfigApplyRefusesGuestWithOlderLockScript(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "restart") {
 		t.Fatalf("config apply against an older guest script = %v, want an error pointing at a restart", err)
 	}
-	if ranAny(r.calls, "rm -rf") || ranAny(r.calls, "sudo /usr/local/lib/sandbox/lock-settings.sh") {
+	// The lock step only ever runs inside the exchange command, so its
+	// absence is what proves nothing was locked; the script path itself also
+	// appears in the sha256sum probe that produced the refusal.
+	if ranAny(r.calls, "copy") || ranAny(r.calls, "--exchange") {
 		t.Errorf("nothing may be pushed or locked against an older guest script, calls=%v", r.calls)
 	}
 }
@@ -97,7 +100,7 @@ func TestConfigApplyDoesNotDependOnProfiles(t *testing.T) {
 	if err := root.Execute(); err != nil {
 		t.Fatalf("config apply with an uninstalled profile listed = %v, want success", err)
 	}
-	if !ranAny(r.calls, "sudo /usr/local/lib/sandbox/lock-settings.sh") {
+	if !ranAny(r.calls, "/usr/local/lib/sandbox/lock-settings.sh") {
 		t.Errorf("lock-settings.sh must have run, calls=%v", r.calls)
 	}
 }

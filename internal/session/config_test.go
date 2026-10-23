@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -52,22 +53,37 @@ func TestPushConfigBuildsTreeBesideLiveOneThenSwapsAndLocks(t *testing.T) {
 		t.Errorf("the live tree must never be removed outright, calls=%v", r.calls)
 	}
 	installIdx := findCallIndex(r.calls, "install -D -m 0444 -o root -g root")
-	swapIdx := findCallIndex(r.calls, "mv -T "+guest.ConfigRoot+".new "+guest.ConfigRoot)
-	lockIdx := findCallIndex(r.calls, "sudo "+lockScript.Path)
 	if installIdx < 0 {
 		t.Fatalf("settings.json must be installed root-owned and read-only, calls=%v", r.calls)
 	}
-	if !strings.HasSuffix(strings.Join(r.calls[installIdx], " "), guest.ConfigRoot+".new/.claude/settings.json") {
-		t.Errorf("files must be installed into the staging tree, not the live one: %v", r.calls[installIdx])
+	installDst := r.calls[installIdx][len(r.calls[installIdx])-1]
+	stageRe := regexp.MustCompile("^" + regexp.QuoteMeta(guest.ConfigRoot) + `\.new-[0-9a-f]+/\.claude/settings\.json$`)
+	if !stageRe.MatchString(installDst) {
+		t.Errorf("files must be installed into a per-invocation staging tree, got %s", installDst)
 	}
+	// The swap and the lock step travel in one guest command, under an
+	// exclusive lock so two applies cannot interleave, and the swap is an
+	// exchange: the canonical path is never absent, not even between two
+	// renames.
+	swapIdx := findCallIndex(r.calls, "mv -T --exchange")
 	if swapIdx < 0 {
-		t.Fatal("the staging tree must be swapped into place")
+		t.Fatalf("the staging tree must be exchanged into place, calls=%v", r.calls)
 	}
-	if lockIdx < 0 {
-		t.Fatal("lock-settings.sh must run so the agent's home picks up the new tree")
+	swap := strings.Join(r.calls[swapIdx], " ")
+	if !strings.Contains(swap, "flock ") {
+		t.Errorf("the swap must run under an exclusive lock: %s", swap)
 	}
-	if installIdx >= swapIdx || swapIdx >= lockIdx {
-		t.Errorf("order must be install (%d) < swap (%d) < lock (%d)", installIdx, swapIdx, lockIdx)
+	if !strings.Contains(swap, lockScript.Path) {
+		t.Errorf("the lock step must run in the same guarded command as the swap: %s", swap)
+	}
+	if strings.Index(swap, "--exchange") > strings.Index(swap, lockScript.Path) {
+		t.Errorf("the exchange must precede the lock step: %s", swap)
+	}
+	if installIdx >= swapIdx {
+		t.Errorf("install (%d) must precede the swap (%d)", installIdx, swapIdx)
+	}
+	if removedLiveTree(r.calls) {
+		t.Errorf("the live tree must never be removed outright, calls=%v", r.calls)
 	}
 }
 
@@ -80,11 +96,35 @@ func TestPushConfigLeavesLiveTreeAloneWhenAnUploadFails(t *testing.T) {
 	if err := PushConfig(context.Background(), d, files, lockScript); err == nil {
 		t.Fatal("PushConfig succeeded although the upload failed")
 	}
-	if removedLiveTree(r.calls) || r.ranAny("mv -T") {
+	if removedLiveTree(r.calls) || r.ranAny("--exchange") {
 		t.Errorf("the live tree must be untouched after a failed upload, calls=%v", r.calls)
 	}
-	if findCallIndex(r.calls, "sudo "+lockScript.Path) >= 0 {
+	if r.ranAny(lockScript.Path+" ") || strings.HasSuffix(strings.Join(r.calls[len(r.calls)-1], " "), lockScript.Path) {
 		t.Errorf("lock-settings.sh must not run after a failed upload, calls=%v", r.calls)
+	}
+	// The abandoned staging tree is removed, so a failed apply leaves no
+	// stray root-owned directory beside the canonical one.
+	last := strings.Join(r.calls[len(r.calls)-1], " ")
+	if !regexp.MustCompile(`rm -rf ` + regexp.QuoteMeta(guest.ConfigRoot) + `\.new-[0-9a-f]+$`).MatchString(last) {
+		t.Errorf("the staging tree must be cleaned up after a failed upload, last call = %s", last)
+	}
+}
+
+// The paths come from this binary's own embedded tree, but the guard that
+// keeps the push inside the config tree must not be fooled by a prefix
+// alone: a traversal component would escape the staging tree on the way
+// to the live one.
+func TestPushConfigRejectsTraversalInsideThePrefix(t *testing.T) {
+	r := &fakeRunner{out: map[string][]byte{"sha256sum": guestHashOutput(lockScript)}}
+	d := testDeps(t, r)
+	files := []guest.DataFile{
+		{Path: guest.ConfigRoot + "/../sandbox-profiles/x", Permissions: "0444", Content: "x\n"},
+	}
+	if err := PushConfig(context.Background(), d, files, lockScript); err == nil {
+		t.Fatal("PushConfig accepted a path that leaves the config tree through ..")
+	}
+	if len(r.calls) != 0 {
+		t.Errorf("nothing may touch the guest for a rejected set, calls=%v", r.calls)
 	}
 }
 

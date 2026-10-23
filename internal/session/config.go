@@ -2,9 +2,11 @@ package session
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"path"
 	"strings"
 
 	"github.com/wetransform/code-vm/internal/guest"
@@ -33,6 +35,43 @@ func verifyGuestScript(ctx context.Context, d Deps, script guest.DataFile) error
 	return nil
 }
 
+// configSwapLock serialises the swap-and-lock step between concurrent
+// applies. /run/lock is tmpfs, so a stale lock cannot survive a reboot.
+const configSwapLock = "/run/lock/sandbox-config.lock"
+
+// configSwapScript exchanges the staged tree with the live one and runs the
+// lock step, as one guest command under an exclusive lock. $1 is the live
+// tree, $2 the staged tree, $3 the lock script. `mv --exchange` is a single
+// renameat2(RENAME_EXCHANGE): the canonical path is never absent, not even
+// between two renames, so an interruption at any point leaves either the
+// old tree or the new one — never neither. The live tree is created first
+// so a guest whose tree somehow went missing still has something to
+// exchange; the exchange then hands the previous tree to the staging name,
+// which is removed.
+const configSwapScript = `set -e
+install -d -m 0755 "$1"
+mv -T --exchange "$2" "$1"
+rm -rf "$2"
+"$3"`
+
+// stagingTreeName returns an unpredictable per-invocation sibling of the
+// live tree, so two applies never build into the same directory.
+func stagingTreeName() (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generate staging name: %w", err)
+	}
+	return guest.ConfigRoot + ".new-" + hex.EncodeToString(b[:]), nil
+}
+
+// cleanupStagingTree removes an abandoned staging tree, best effort and on
+// an independent context, the same way cleanupStaged treats a staged file.
+func cleanupStagingTree(d Deps, dir string) {
+	ctx, cancel := context.WithTimeout(context.Background(), stagedCleanupTimeout)
+	defer cancel()
+	_ = d.Client.Admin(ctx, []string{"rm", "-rf", dir})
+}
+
 // PushConfig replaces the canonical config tree in a running VM with files
 // and re-runs lock-settings.sh, so the agent's locked settings match what
 // this binary ships — the live counterpart of what Lima's data provisioning
@@ -41,51 +80,43 @@ func verifyGuestScript(ctx context.Context, d Deps, script guest.DataFile) error
 // touched, since that script, not the files, is what runs against the live
 // agent.
 //
-// Only paths under guest.ConfigRoot are accepted: the tree is replaced
+// Only clean paths under guest.ConfigRoot are accepted: the tree is replaced
 // wholesale (a file dropped from the binary must not survive and get
 // re-locked into the home), and that is only safe for a directory this
-// function owns outright. The replacement is built beside the live tree and
-// swapped in only once every file has landed, so a failed or interrupted
-// push leaves the last good tree in place rather than an empty one that
-// the lock step would then faithfully apply. Content travels through the
-// admin staging path so the agent never gets a window to tamper with what
-// root is about to lock.
+// function owns outright. The replacement is built in a per-invocation
+// staging tree beside the live one and exchanged with it atomically once
+// every file has landed, so a failed or interrupted push leaves the last
+// good tree in place rather than an empty one that the lock step would then
+// faithfully apply. Content travels through the admin staging path so the
+// agent never gets a window to tamper with what root is about to lock.
 func PushConfig(ctx context.Context, d Deps, files []guest.DataFile, lockScript guest.DataFile) error {
 	for _, f := range files {
-		if !strings.HasPrefix(f.Path, guest.ConfigRoot+"/") {
-			return fmt.Errorf("refusing to push %s: outside the config tree %s", f.Path, guest.ConfigRoot)
+		if path.Clean(f.Path) != f.Path || !strings.HasPrefix(f.Path, guest.ConfigRoot+"/") {
+			return fmt.Errorf("refusing to push %s: not a clean path inside the config tree %s", f.Path, guest.ConfigRoot)
 		}
 	}
 	if err := verifyGuestScript(ctx, d, lockScript); err != nil {
 		return err
 	}
-	next, prev := guest.ConfigRoot+".new", guest.ConfigRoot+".old"
-	if err := d.Client.Admin(ctx, []string{"rm", "-rf", next}); err != nil {
+	stage, err := stagingTreeName()
+	if err != nil {
 		return err
 	}
-	if err := d.Client.Admin(ctx, []string{"install", "-d", "-m", "0755", next}); err != nil {
+	if err := d.Client.Admin(ctx, []string{"install", "-d", "-m", "0755", stage}); err != nil {
 		return err
 	}
 	for _, f := range files {
-		dst := next + strings.TrimPrefix(f.Path, guest.ConfigRoot)
+		dst := stage + strings.TrimPrefix(f.Path, guest.ConfigRoot)
 		if err := installContent(ctx, d, []byte(f.Content), dst, f.Permissions, "root", "root"); err != nil {
+			cleanupStagingTree(d, stage)
 			return err
 		}
 	}
-	// Swap. An absent live tree (a push interrupted right here once before)
-	// is given an empty stand-in so the rename has something to move aside.
-	// Between the two renames the canonical path is briefly missing; the
-	// lock step refuses to run without it, and a boot re-provisions it.
-	for _, cmd := range [][]string{
-		{"rm", "-rf", prev},
-		{"install", "-d", "-m", "0755", guest.ConfigRoot},
-		{"mv", "-T", guest.ConfigRoot, prev},
-		{"mv", "-T", next, guest.ConfigRoot},
-		{"rm", "-rf", prev},
-	} {
-		if err := d.Client.Admin(ctx, cmd); err != nil {
-			return err
-		}
+	if err := d.Client.Admin(ctx, []string{
+		"flock", configSwapLock, "sh", "-c", configSwapScript, "swap", guest.ConfigRoot, stage, lockScript.Path,
+	}); err != nil {
+		cleanupStagingTree(d, stage)
+		return err
 	}
-	return d.Client.Admin(ctx, []string{LockSettingsScript})
+	return nil
 }
