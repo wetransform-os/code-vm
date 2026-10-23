@@ -21,7 +21,8 @@ A VM has its own kernel, so it runs a real Docker daemon instead.
   read-only in the guest; `settings.local.json` is pre-claimed. The file is
   embedded in the `code-vm` binary: to change it, edit
   `internal/guest/files/config/.claude/settings.json`, rebuild, and run
-  `code-vm config apply` (or restart the VM).
+  `code-vm config apply` (or restart the VM). The live path refuses a VM
+  whose boot scripts predate the binary; restart once to update them.
 - **No host credentials.** Only the directories you configure are shared. Host
   `$HOME`, `~/.ssh` and `~/.aws` are not visible in the guest.
 

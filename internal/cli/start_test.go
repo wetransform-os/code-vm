@@ -14,7 +14,10 @@ import (
 
 type recordingRunner struct {
 	statusOut string
-	calls     [][]string
+	// outputs answers Output calls whose argv contains the key; statusOut
+	// answers everything else.
+	outputs map[string]string
+	calls   [][]string
 }
 
 func (r *recordingRunner) Run(_ context.Context, args ...string) error {
@@ -24,6 +27,12 @@ func (r *recordingRunner) Run(_ context.Context, args ...string) error {
 
 func (r *recordingRunner) Output(_ context.Context, args ...string) ([]byte, error) {
 	r.calls = append(r.calls, args)
+	joined := strings.Join(args, " ")
+	for match, out := range r.outputs {
+		if strings.Contains(joined, match) {
+			return []byte(out), nil
+		}
+	}
 	return []byte(r.statusOut), nil
 }
 
