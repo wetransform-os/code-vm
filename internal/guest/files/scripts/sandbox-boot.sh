@@ -40,7 +40,10 @@ trap 'on_failure $LINENO' ERR
 
 echo "[boot] Sandbox boot sequence starting"
 
-/usr/local/lib/sandbox/lock-settings.sh
+# Under the same lock `code-vm config apply` takes around its own run of
+# this script: Lima reports the VM as Running before this sequence has
+# finished, so an apply from the host can otherwise interleave with it.
+flock /run/lock/sandbox-config.lock /usr/local/lib/sandbox/lock-settings.sh
 /usr/local/lib/sandbox/init-firewall.sh
 
 # Rule verification proves the firewall has the shape it intends, not that
