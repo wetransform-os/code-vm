@@ -57,6 +57,15 @@ enter() {
 
 # ensure_dir REL: make every component of REL (relative to the home) a real
 # agent-owned directory, and leave the shell inside it.
+#
+# A missing component is created with a plain mkdir, never `install -d` or
+# `mkdir -p`: those treat an entry that appeared meanwhile as success and, if
+# it is a symlink to a directory, go on to apply mode and ownership to the
+# directory it points at. mkdir(2) fails on any existing entry without
+# touching what it names, so an entry the agent races in only aborts the
+# run. Ownership and mode are applied to `.` once `enter` has proven the
+# working directory is the real one — a path can be swapped, an inode
+# cannot.
 ensure_dir() {
     local cur="$AGENT_HOME" comp
     enter "$cur"
@@ -66,11 +75,17 @@ ensure_dir() {
         if [ -L "$comp" ]; then
             die "$cur/$comp is a symlink; refusing to write through it"
         fi
+        created=0
         if [ ! -d "$comp" ]; then
-            install -d -m 0755 -o "$AGENT_UID" -g "$AGENT_GID" "$comp"
+            mkdir "$comp" || die "cannot create $cur/$comp"
+            created=1
         fi
         cur="$cur/$comp"
         enter "$cur"
+        if [ "$created" = 1 ]; then
+            chown "$AGENT_UID:$AGENT_GID" .
+            chmod 0755 .
+        fi
     done
 }
 
