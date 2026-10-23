@@ -46,11 +46,29 @@ func newConfigApplyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := session.PushConfig(ctx, agentDeps(cl, c, profiles), files); err != nil {
+			lock, err := embeddedFile(session.LockSettingsScript)
+			if err != nil {
+				return err
+			}
+			if err := session.PushConfig(ctx, agentDeps(cl, c, profiles), files, lock); err != nil {
 				return fmt.Errorf("push config: %w", err)
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "Config applied and locked. Running Claude sessions may need a restart to pick it up.")
 			return nil
 		},
 	}
+}
+
+// embeddedFile returns the data file this binary delivers at guestPath.
+func embeddedFile(guestPath string) (guest.DataFile, error) {
+	files, err := guest.DataFiles()
+	if err != nil {
+		return guest.DataFile{}, err
+	}
+	for _, f := range files {
+		if f.Path == guestPath {
+			return f, nil
+		}
+	}
+	return guest.DataFile{}, fmt.Errorf("%s is not among this binary's guest files", guestPath)
 }
