@@ -18,7 +18,10 @@ A VM has its own kernel, so it runs a real Docker daemon instead.
   yours so workspace files stay host-owned. `limaadmin` holds sudo and is used
   only by `code-vm` for privileged setup.
 - **Locked permissions.** `~/.claude/settings.json` is root-owned and
-  read-only in the guest; `settings.local.json` is pre-claimed.
+  read-only in the guest; `settings.local.json` is pre-claimed. The file is
+  embedded in the `code-vm` binary: to change it, edit
+  `internal/guest/files/config/.claude/settings.json`, rebuild, and run
+  `code-vm config apply` (or restart the VM).
 - **No host credentials.** Only the directories you configure are shared. Host
   `$HOME`, `~/.ssh` and `~/.aws` are not visible in the guest.
 
@@ -72,6 +75,7 @@ code-vm                          # interactive shell
 | `code-vm proxy-log [all\|denied\|allowed\|follow]` | Read the Squid access log |
 | `code-vm allow [domain...]` | Add domains to the allowlist and apply them live |
 | `code-vm forward <port>...` | Reach guest ports on the host's localhost until Ctrl-C |
+| `code-vm config apply` | Push this binary's locked Claude settings into the running VM |
 | `code-vm secrets` | List secrets/vars the active profiles declare, mapped or not |
 | `code-vm doctor` | Check host prerequisites |
 
