@@ -37,10 +37,10 @@ func TestConfigApplyPushesCanonicalTreeAndLocks(t *testing.T) {
 		t.Fatalf("config apply: %v", err)
 	}
 	for _, want := range []string{
-		"rm -rf " + guest.ConfigRoot,
 		"install -D -m 0444 -o root -g root",
-		guest.ConfigRoot + "/.claude/settings.json",
-		"/usr/local/lib/sandbox/lock-settings.sh",
+		guest.ConfigRoot + ".new/.claude/settings.json",
+		"mv -T " + guest.ConfigRoot + ".new " + guest.ConfigRoot,
+		"sudo /usr/local/lib/sandbox/lock-settings.sh",
 	} {
 		if !ranAny(r.calls, want) {
 			t.Errorf("missing guest command %q in %v", want, r.calls)
@@ -81,5 +81,23 @@ func TestConfigApplyRefusesGuestWithOlderLockScript(t *testing.T) {
 	}
 	if ranAny(r.calls, "rm -rf") || ranAny(r.calls, "sudo /usr/local/lib/sandbox/lock-settings.sh") {
 		t.Errorf("nothing may be pushed or locked against an older guest script, calls=%v", r.calls)
+	}
+}
+
+// Pushing the config needs nothing from the profiles, so a profile that is
+// listed but broken (or not installed yet) must not block it — the lock
+// settings are the one thing that should always be deliverable.
+func TestConfigApplyDoesNotDependOnProfiles(t *testing.T) {
+	root := NewRootCmd()
+	withScratchConfig(t)
+	appendConfig(t, "profiles:\n  - not-installed\n")
+	r := installFakeClient(t, "Running")
+	r.outputs = map[string]string{"sha256sum": guestLockScriptHash(t)}
+	root.SetArgs([]string{"config", "apply"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("config apply with an uninstalled profile listed = %v, want success", err)
+	}
+	if !ranAny(r.calls, "sudo /usr/local/lib/sandbox/lock-settings.sh") {
+		t.Errorf("lock-settings.sh must have run, calls=%v", r.calls)
 	}
 }

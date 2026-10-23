@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,10 +15,16 @@ import (
 type fakeRunner struct {
 	calls [][]string
 	out   map[string][]byte
+	// failOn makes Run fail for any argv containing it, so a push can be
+	// interrupted at a chosen step.
+	failOn string
 }
 
 func (f *fakeRunner) Run(_ context.Context, args ...string) error {
 	f.calls = append(f.calls, args)
+	if f.failOn != "" && strings.Contains(strings.Join(args, " "), f.failOn) {
+		return fmt.Errorf("fake failure on %q", f.failOn)
+	}
 	return nil
 }
 
