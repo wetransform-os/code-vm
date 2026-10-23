@@ -110,14 +110,22 @@ place() {
 # turned into since the last look: nofollow refuses a symlink, nonblock makes
 # a FIFO (which would otherwise hang the boot until something writes to it)
 # return at once, and the byte cap bounds what a writer on the other end can
-# push into staging. Anything that is not readable JSON simply yields no
-# previous plugins — the agent can only ever lose its own enablement.
+# push into staging. The value is then reduced to the shape Claude Code
+# writes — an object of booleans — before it goes anywhere near the
+# canonical file: the agent can put anything there, and a jq merge that
+# fails on an array, or a settings.json Claude Code then refuses to load,
+# would both cost more than the plugin enablement the snapshot preserves.
+# Anything else simply yields no previous plugins — the agent can only ever
+# lose its own enablement.
 PREV_ENABLED_PLUGINS='{}'
 ensure_dir "$(dirname "$SETTINGS_REL")"
 dd if="./$(basename "$SETTINGS_REL")" of="$STAGE/previous" bs=1M count=4 \
     iflag=nonblock,nofollow status=none 2> /dev/null || true
 if [ -s "$STAGE/previous" ]; then
-    PREV_ENABLED_PLUGINS="$(jq -c '.enabledPlugins // {}' "$STAGE/previous" 2> /dev/null || echo '{}')"
+    PREV_ENABLED_PLUGINS="$(jq -c '
+        .enabledPlugins
+        | if type == "object" then with_entries(select(.value | type == "boolean")) else {} end
+    ' "$STAGE/previous" 2> /dev/null || echo '{}')"
 fi
 
 n=0
@@ -126,9 +134,12 @@ while IFS= read -r src_file; do
     staged="$STAGE/file.$n"
     n=$((n + 1))
     cp "$src_file" "$staged"
-    if [ "$rel" = "$SETTINGS_REL" ] && [ "$PREV_ENABLED_PLUGINS" != "{}" ] && [ "$PREV_ENABLED_PLUGINS" != "null" ]; then
+    if [ "$rel" = "$SETTINGS_REL" ] && [ "$PREV_ENABLED_PLUGINS" != "{}" ]; then
+        # The canonical side is this binary's own file, but guard its shape
+        # too: the merge must never be the step that fails the boot.
         # shellcheck disable=SC2016 # jq program, not a shell expansion
-        jq --argjson ep "$PREV_ENABLED_PLUGINS" '.enabledPlugins = ($ep + (.enabledPlugins // {}))' \
+        jq --argjson ep "$PREV_ENABLED_PLUGINS" \
+            '.enabledPlugins = ($ep + (.enabledPlugins | if type == "object" then . else {} end))' \
             "$staged" > "$staged.merged"
         mv -T "$staged.merged" "$staged"
         echo "[lock-settings] Preserved enabledPlugins across restart"
