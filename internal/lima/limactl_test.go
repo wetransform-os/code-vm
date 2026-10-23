@@ -164,3 +164,19 @@ func TestReadFileSuppressesStderrAndPassesPathSafely(t *testing.T) {
 		}
 	}
 }
+
+// An admin shell lands as limaadmin itself, not root: sudo is one keystroke
+// away in the guest, and dropping into root by default would make every
+// stray command privileged. Without a command, `limactl shell` opens the
+// user's login shell.
+func TestShellArgsRunsAsLimaadminWithoutSudo(t *testing.T) {
+	c := Client{R: &fakeRunner{}}
+	if got, want := c.ShellArgs(nil), []string{"shell", InstanceName}; !reflect.DeepEqual(got, want) {
+		t.Errorf("ShellArgs(nil) = %v, want %v", got, want)
+	}
+	got := c.ShellArgs([]string{"id", "-un"})
+	want := []string{"shell", InstanceName, "id", "-un"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ShellArgs(cmd) = %v, want %v", got, want)
+	}
+}
