@@ -36,8 +36,16 @@ func verifyGuestScript(ctx context.Context, d Deps, script guest.DataFile) error
 }
 
 // configSwapLock serialises the swap-and-lock step between concurrent
-// applies. /run/lock is tmpfs, so a stale lock cannot survive a reboot.
+// applies and the boot sequence, which takes the same lock around its own
+// lock-settings.sh run. /run/lock is tmpfs, so a stale lock cannot survive
+// a reboot.
 const configSwapLock = "/run/lock/sandbox-config.lock"
+
+// bootCompleteMarker is sandbox-boot.sh's final act and what the Lima
+// readiness probe waits for. Lima reports Running as soon as ssh answers,
+// well before that; an apply must not run against a guest whose boot is
+// still provisioning the very tree it would replace.
+const bootCompleteMarker = "/run/sandbox-boot-complete"
 
 // configSwapScript exchanges the staged tree with the live one and runs the
 // lock step, as one guest command under an exclusive lock. $1 is the live
@@ -97,6 +105,9 @@ func PushConfig(ctx context.Context, d Deps, files []guest.DataFile, lockScript 
 	}
 	if err := verifyGuestScript(ctx, d, lockScript); err != nil {
 		return err
+	}
+	if err := d.Client.Admin(ctx, []string{"test", "-f", bootCompleteMarker}); err != nil {
+		return fmt.Errorf("the VM has not finished booting (no %s yet); wait for `code-vm start` to return, then retry", bootCompleteMarker)
 	}
 	stage, err := stagingTreeName()
 	if err != nil {

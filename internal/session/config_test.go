@@ -161,3 +161,25 @@ func TestPushConfigRefusesStaleGuestLockScript(t *testing.T) {
 		t.Errorf("nothing may be pushed or locked when the guest script is stale, calls=%v", r.calls)
 	}
 }
+
+// Lima reports Running as soon as ssh is up, while sandbox-boot.sh may still
+// be running lock-settings.sh itself. An apply must not interleave with
+// that: it waits for the boot-complete marker the readiness probe also
+// waits for, and refuses — touching nothing — until it exists.
+func TestPushConfigRefusesWhileTheGuestIsStillBooting(t *testing.T) {
+	r := &fakeRunner{
+		out:    map[string][]byte{"sha256sum": guestHashOutput(lockScript)},
+		failOn: "test -f /run/sandbox-boot-complete",
+	}
+	d := testDeps(t, r)
+	files := []guest.DataFile{
+		{Path: guest.ConfigRoot + "/.claude/settings.json", Permissions: "0444", Content: "{}\n"},
+	}
+	err := PushConfig(context.Background(), d, files, lockScript)
+	if err == nil || !strings.Contains(err.Error(), "boot") {
+		t.Fatalf("PushConfig during boot = %v, want an error naming the boot", err)
+	}
+	if r.ranAny("copy") || r.ranAny("--exchange") || r.ranAny("install -d") {
+		t.Errorf("nothing may be staged or swapped while the guest boots, calls=%v", r.calls)
+	}
+}
