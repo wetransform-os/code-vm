@@ -76,6 +76,7 @@ code-vm                          # interactive shell
 | `code-vm allow [domain...]` | Add domains to the allowlist and apply them live |
 | `code-vm forward <port>...` | Reach guest ports on the host's localhost until Ctrl-C |
 | `code-vm config apply` | Push this binary's locked Claude settings into the running VM |
+| `code-vm admin [-- cmd]` | Shell into the guest as `limaadmin` (sudo available) |
 | `code-vm secrets` | List secrets/vars the active profiles declare, mapped or not |
 | `code-vm doctor` | Check host prerequisites |
 

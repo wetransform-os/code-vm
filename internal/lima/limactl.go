@@ -93,6 +93,19 @@ func (c Client) AdminArgs(cmd []string) []string {
 	return append(args, cmd...)
 }
 
+// ShellArgs builds the argv that enters the guest as limaadmin itself: the
+// login shell with no cmd, otherwise cmd. No sudo and no sandbox-exec — this
+// is the operator's door, not the agent's.
+func (c Client) ShellArgs(cmd []string) []string {
+	args := []string{"shell", c.instance()}
+	return append(args, cmd...)
+}
+
+// Shell enters the guest as limaadmin, interactively when cmd is empty.
+func (c Client) Shell(ctx context.Context, cmd []string) error {
+	return c.R.Run(ctx, c.ShellArgs(cmd)...)
+}
+
 // Agent runs cmd as the agent user in workdir.
 func (c Client) Agent(ctx context.Context, workdir string, cmd []string) error {
 	return c.R.Run(ctx, c.AgentArgs(workdir, cmd)...)
