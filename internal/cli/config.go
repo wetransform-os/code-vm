@@ -30,7 +30,10 @@ func newConfigApplyCmd() *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			c, profiles, _, err := loadConfigWithProfiles()
+			// Profiles are not loaded: the push needs nothing from them,
+			// and a profile that fails to load must not stand between the
+			// user and the locked settings.
+			c, _, err := loadConfig()
 			if err != nil {
 				return err
 			}
@@ -50,7 +53,7 @@ func newConfigApplyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := session.PushConfig(ctx, agentDeps(cl, c, profiles), files, lock); err != nil {
+			if err := session.PushConfig(ctx, agentDeps(cl, c, nil), files, lock); err != nil {
 				return fmt.Errorf("push config: %w", err)
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "Config applied and locked. Running Claude sessions may need a restart to pick it up.")

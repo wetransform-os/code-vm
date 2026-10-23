@@ -10,10 +10,6 @@ import (
 	"github.com/wetransform/code-vm/internal/guest"
 )
 
-// The live path must leave the guest in the state a boot would: the canonical
-// tree replaced wholesale (a file dropped from the binary must not linger and
-// get re-locked into the home) and lock-settings.sh run afterwards, which is
-// what actually rewrites and locks the agent's settings.
 // lockScript is a stand-in for the embedded lock-settings.sh.
 var lockScript = guest.DataFile{Path: "/usr/local/lib/sandbox/lock-settings.sh", Permissions: "0755", Content: "#!/bin/bash\necho locked\n"}
 
@@ -23,7 +19,26 @@ func guestHashOutput(f guest.DataFile) []byte {
 	return []byte(hex.EncodeToString(sum[:]) + "  " + f.Path + "\n")
 }
 
-func TestPushConfigReplacesTreeThenLocks(t *testing.T) {
+// removedLiveTree reports whether any call was `rm -rf <ConfigRoot>` itself
+// (as opposed to a staging sibling such as ConfigRoot.new).
+func removedLiveTree(calls [][]string) bool {
+	for _, c := range calls {
+		n := len(c)
+		if n >= 3 && c[n-3] == "rm" && c[n-2] == "-rf" && c[n-1] == guest.ConfigRoot {
+			return true
+		}
+	}
+	return false
+}
+
+// The live path must leave the guest in the state a boot would: the canonical
+// tree replaced wholesale (a file dropped from the binary must not linger and
+// get re-locked into the home) and lock-settings.sh run afterwards, which is
+// what actually rewrites and locks the agent's settings. The replacement is
+// built beside the live tree and swapped in only once every file is there:
+// a failed or interrupted push must leave the last good tree in place, not
+// an empty directory the lock step would then faithfully apply.
+func TestPushConfigBuildsTreeBesideLiveOneThenSwapsAndLocks(t *testing.T) {
 	r := &fakeRunner{out: map[string][]byte{"sha256sum": guestHashOutput(lockScript)}}
 	d := testDeps(t, r)
 	files := []guest.DataFile{
@@ -33,26 +48,43 @@ func TestPushConfigReplacesTreeThenLocks(t *testing.T) {
 		t.Fatalf("PushConfig: %v", err)
 	}
 
-	rmIdx := findCallIndex(r.calls, "rm -rf "+guest.ConfigRoot)
-	installIdx := findCallIndex(r.calls, "install -D -m 0444 -o root -g root")
-	lockIdx := findCallIndex(r.calls, "sudo /usr/local/lib/sandbox/lock-settings.sh")
-	if rmIdx < 0 {
-		t.Error("the old tree must be removed so files dropped from the binary disappear")
+	if removedLiveTree(r.calls) {
+		t.Errorf("the live tree must never be removed outright, calls=%v", r.calls)
 	}
+	installIdx := findCallIndex(r.calls, "install -D -m 0444 -o root -g root")
+	swapIdx := findCallIndex(r.calls, "mv -T "+guest.ConfigRoot+".new "+guest.ConfigRoot)
+	lockIdx := findCallIndex(r.calls, "sudo "+lockScript.Path)
 	if installIdx < 0 {
-		t.Errorf("settings.json must be installed root-owned and read-only, calls=%v", r.calls)
+		t.Fatalf("settings.json must be installed root-owned and read-only, calls=%v", r.calls)
+	}
+	if !strings.HasSuffix(strings.Join(r.calls[installIdx], " "), guest.ConfigRoot+".new/.claude/settings.json") {
+		t.Errorf("files must be installed into the staging tree, not the live one: %v", r.calls[installIdx])
+	}
+	if swapIdx < 0 {
+		t.Fatal("the staging tree must be swapped into place")
 	}
 	if lockIdx < 0 {
-		t.Error("lock-settings.sh must run so the agent's home picks up the new tree")
+		t.Fatal("lock-settings.sh must run so the agent's home picks up the new tree")
 	}
-	if rmIdx >= 0 && installIdx >= 0 && rmIdx >= installIdx {
-		t.Errorf("rm (%d) must precede install (%d)", rmIdx, installIdx)
+	if installIdx >= swapIdx || swapIdx >= lockIdx {
+		t.Errorf("order must be install (%d) < swap (%d) < lock (%d)", installIdx, swapIdx, lockIdx)
 	}
-	if installIdx >= 0 && lockIdx >= 0 && installIdx >= lockIdx {
-		t.Errorf("install (%d) must precede lock-settings.sh (%d)", installIdx, lockIdx)
+}
+
+func TestPushConfigLeavesLiveTreeAloneWhenAnUploadFails(t *testing.T) {
+	r := &fakeRunner{out: map[string][]byte{"sha256sum": guestHashOutput(lockScript)}, failOn: "copy"}
+	d := testDeps(t, r)
+	files := []guest.DataFile{
+		{Path: guest.ConfigRoot + "/.claude/settings.json", Permissions: "0444", Content: "{}\n"},
 	}
-	if !r.ranAny(guest.ConfigRoot + "/.claude/settings.json") {
-		t.Errorf("settings.json must land under %s, calls=%v", guest.ConfigRoot, r.calls)
+	if err := PushConfig(context.Background(), d, files, lockScript); err == nil {
+		t.Fatal("PushConfig succeeded although the upload failed")
+	}
+	if removedLiveTree(r.calls) || r.ranAny("mv -T") {
+		t.Errorf("the live tree must be untouched after a failed upload, calls=%v", r.calls)
+	}
+	if findCallIndex(r.calls, "sudo "+lockScript.Path) >= 0 {
+		t.Errorf("lock-settings.sh must not run after a failed upload, calls=%v", r.calls)
 	}
 }
 

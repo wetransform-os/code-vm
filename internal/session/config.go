@@ -41,11 +41,15 @@ func verifyGuestScript(ctx context.Context, d Deps, script guest.DataFile) error
 // touched, since that script, not the files, is what runs against the live
 // agent.
 //
-// Only paths under guest.ConfigRoot are accepted: the tree is removed and
-// recreated wholesale (a file dropped from the binary must not survive and
-// get re-locked into the home), and that is only safe for a directory this
-// function owns outright. Content travels through the admin staging path so
-// the agent never gets a window to tamper with what root is about to lock.
+// Only paths under guest.ConfigRoot are accepted: the tree is replaced
+// wholesale (a file dropped from the binary must not survive and get
+// re-locked into the home), and that is only safe for a directory this
+// function owns outright. The replacement is built beside the live tree and
+// swapped in only once every file has landed, so a failed or interrupted
+// push leaves the last good tree in place rather than an empty one that
+// the lock step would then faithfully apply. Content travels through the
+// admin staging path so the agent never gets a window to tamper with what
+// root is about to lock.
 func PushConfig(ctx context.Context, d Deps, files []guest.DataFile, lockScript guest.DataFile) error {
 	for _, f := range files {
 		if !strings.HasPrefix(f.Path, guest.ConfigRoot+"/") {
@@ -55,14 +59,31 @@ func PushConfig(ctx context.Context, d Deps, files []guest.DataFile, lockScript 
 	if err := verifyGuestScript(ctx, d, lockScript); err != nil {
 		return err
 	}
-	if err := d.Client.Admin(ctx, []string{"rm", "-rf", guest.ConfigRoot}); err != nil {
+	next, prev := guest.ConfigRoot+".new", guest.ConfigRoot+".old"
+	if err := d.Client.Admin(ctx, []string{"rm", "-rf", next}); err != nil {
 		return err
 	}
-	if err := d.Client.Admin(ctx, []string{"install", "-d", "-m", "0755", guest.ConfigRoot}); err != nil {
+	if err := d.Client.Admin(ctx, []string{"install", "-d", "-m", "0755", next}); err != nil {
 		return err
 	}
 	for _, f := range files {
-		if err := installContent(ctx, d, []byte(f.Content), f.Path, f.Permissions, "root", "root"); err != nil {
+		dst := next + strings.TrimPrefix(f.Path, guest.ConfigRoot)
+		if err := installContent(ctx, d, []byte(f.Content), dst, f.Permissions, "root", "root"); err != nil {
+			return err
+		}
+	}
+	// Swap. An absent live tree (a push interrupted right here once before)
+	// is given an empty stand-in so the rename has something to move aside.
+	// Between the two renames the canonical path is briefly missing; the
+	// lock step refuses to run without it, and a boot re-provisions it.
+	for _, cmd := range [][]string{
+		{"rm", "-rf", prev},
+		{"install", "-d", "-m", "0755", guest.ConfigRoot},
+		{"mv", "-T", guest.ConfigRoot, prev},
+		{"mv", "-T", next, guest.ConfigRoot},
+		{"rm", "-rf", prev},
+	} {
+		if err := d.Client.Admin(ctx, cmd); err != nil {
 			return err
 		}
 	}
