@@ -353,6 +353,35 @@ assert_fails "agent cannot write settings.local.json" \
 assert_fails "agent cannot write /etc" \
     agent bash -c "echo x > /etc/code-vm-probe"
 
+# The lock step runs as root while the agent owns ~/.claude, so a directory
+# entry the agent swaps for a symlink must not redirect root's writes. Both
+# the file-level and the directory-level swap are exercised; a canary the
+# agent cannot write proves the write went nowhere. `config apply` is the
+# live trigger; the same script runs at boot against whatever the agent left
+# on disk, so a boot-time plant is covered by the same code path.
+CANARY=/tmp/code-vm-lock-canary
+adm sh -c "echo canary > $CANARY && chown root:root $CANARY && chmod 0644 $CANARY"
+agent bash -c "cd ~/.claude && rm -f settings.json settings.local.json && ln -s $CANARY settings.json && ln -s $CANARY settings.local.json"
+assert_ok "config apply replaces planted file symlinks" \
+    "${CODE_VM_ARGS[@]}" config apply
+assert_ok "planted file symlinks did not redirect root's writes" \
+    bash -c "[ \"\$(limactl shell $INSTANCE sudo cat $CANARY)\" = canary ]"
+assert_ok "settings.json is a regular locked file again" \
+    bash -c "[ \"\$(limactl shell $INSTANCE sudo stat -c '%F:%U:%a' $SETTINGS)\" = 'regular file:root:444' ]"
+assert_ok "settings.local.json is a regular locked file again" \
+    bash -c "[ \"\$(limactl shell $INSTANCE sudo stat -c '%F:%U:%a' /home/$AGENT_USER/.claude/settings.local.json)\" = 'regular file:root:444' ]"
+
+adm sh -c "rm -rf /tmp/code-vm-lock-dir && install -d -m 0755 /tmp/code-vm-lock-dir"
+agent bash -c "cd ~ && mv .claude .claude.real && ln -s /tmp/code-vm-lock-dir .claude"
+assert_fails "config apply refuses a symlinked .claude directory" \
+    "${CODE_VM_ARGS[@]}" config apply
+assert_ok "nothing was written through the symlinked directory" \
+    bash -c "[ -z \"\$(limactl shell $INSTANCE sudo ls -A /tmp/code-vm-lock-dir)\" ]"
+agent bash -c "cd ~ && rm .claude && mv .claude.real .claude"
+assert_ok "config apply succeeds once the directory is real again" \
+    "${CODE_VM_ARGS[@]}" config apply
+adm rm -rf "$CANARY" /tmp/code-vm-lock-dir
+
 echo ""
 echo "── Agent CLIs ────────────────────────────────────────────────────"
 
