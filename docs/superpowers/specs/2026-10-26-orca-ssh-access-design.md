@@ -1,7 +1,7 @@
 # Orca SSH Access and Detached VM Boot — Design
 
 **Date:** 2026-10-26
-**Status:** Approved design, pending implementation plan
+**Status:** Implemented
 
 ## Context
 
