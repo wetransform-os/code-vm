@@ -98,10 +98,7 @@ func newMountCmd() *cobra.Command {
 			if _, err := ensureRunning(cmd.Context(), cl, updated, profiles); err != nil {
 				return err
 			}
-			if err := pushRendered(cmd.Context(), cl, updated, profiles, rendered, out); err != nil {
-				return err
-			}
-			return prepareAgentAccess(cmd.Context(), cl, updated, profiles, path, out)
+			return prepareAgentAccess(cmd.Context(), cl, updated, profiles, rendered, path, out)
 		},
 	}
 }

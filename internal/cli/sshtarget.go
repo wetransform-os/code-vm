@@ -121,13 +121,13 @@ func newSSHTargetCmd() *cobra.Command {
 			}
 
 			out := cmd.OutOrStdout()
+			// Always push rather than read-then-compare: authorized_keys is
+			// agent-owned, so a probe through the admin's cat could be pointed
+			// at /dev/zero or a FIFO and exhaust or hang the host. The relay
+			// replaces the file as the agent without reading it first.
 			if running {
-				d := agentDeps(cl, c, nil)
-				if !session.AuthorizedKeyInstalled(ctx, d, key.AuthorizedLine) {
-					if err := session.PushAuthorizedKey(ctx, d, key.AuthorizedLine); err != nil {
-						return err
-					}
-					fmt.Fprintln(out, "Installed the agent's SSH key into the running VM.")
+				if err := session.PushAuthorizedKey(ctx, agentDeps(cl, c, nil), key.AuthorizedLine); err != nil {
+					return err
 				}
 			}
 			fmt.Fprint(out, renderSSHTarget(sshTarget{

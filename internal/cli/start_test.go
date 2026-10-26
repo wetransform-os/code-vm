@@ -14,6 +14,7 @@ import (
 	"github.com/wetransform/code-vm/internal/agentssh"
 	"github.com/wetransform/code-vm/internal/config"
 	"github.com/wetransform/code-vm/internal/lima"
+	"github.com/wetransform/code-vm/internal/profile"
 )
 
 type recordingRunner struct {
@@ -326,5 +327,41 @@ func TestRecreateAppliesTheHostGitIdentity(t *testing.T) {
 	}
 	if !ranAny(r.calls, ".gitconfig 0644") {
 		t.Errorf("recreate did not push the git identity, calls=%q", r.calls)
+	}
+}
+
+// A profile may ship its own .gitconfig template; the host identity is a
+// minimal [user] block and must not clobber it, so it lands first (the same
+// order as the default command: session.Setup, then pushRendered).
+func TestPrepareAgentAccessPushesTheIdentityBeforeTheTemplates(t *testing.T) {
+	withScratchConfig(t)
+	withHostGitIdentity(t, "Ada Lovelace", "ada@example.com")
+	fakeAgentKeygen(t)
+	r := installFakeClient(t, "Running")
+	c, cfgPath, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered := []profile.Rendered{{Rel: ".gitconfig", Content: []byte("[user]\n\tname = Profile\n[credential]\n\thelper = store\n")}}
+	if err := prepareAgentAccess(context.Background(), clientFor(c), c, nil, rendered, cfgPath, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	identity, template, key := -1, -1, -1
+	for i, call := range r.calls {
+		s := strings.Join(call, " ")
+		switch {
+		case strings.Contains(s, ".gitconfig 0644"):
+			identity = i
+		case strings.Contains(s, ".gitconfig 0600"):
+			template = i
+		case strings.Contains(s, ".ssh/authorized_keys 0600"):
+			key = i
+		}
+	}
+	if identity < 0 || template < 0 || key < 0 {
+		t.Fatalf("expected identity, template and key pushes, calls=%q", r.calls)
+	}
+	if identity >= template || template >= key {
+		t.Errorf("order must be identity (%d) < template (%d) < key (%d)", identity, template, key)
 	}
 }
