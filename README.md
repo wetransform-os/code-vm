@@ -76,6 +76,7 @@ code-vm                          # interactive shell
 | `code-vm proxy-log [all\|denied\|allowed\|follow]` | Read the Squid access log |
 | `code-vm allow [domain...]` | Add domains to the allowlist and apply them live |
 | `code-vm forward <port>...` | Reach guest ports on the host's localhost until Ctrl-C |
+| `code-vm ssh-target` | Print the SSH target (host, port, user, key) for Orca or an ssh_config alias |
 | `code-vm config apply` | Push this binary's locked Claude settings into the running VM |
 | `code-vm admin [-- cmd]` | Shell into the guest as `limaadmin` (sudo available) |
 | `code-vm secrets` | List secrets/vars the active profiles declare, mapped or not |
@@ -101,6 +102,7 @@ cpus: 4
 memory: 12GiB
 disk: 100GiB
 swap: 4GiB                    # guest swapfile; 0B disables it — see below
+sshPort: 0                    # fixed host port for the guest's sshd; 0 lets Lima pick — see below
 extraDomains:                 # added to the Squid allowlist
   - registry.mycompany.com
 containerProxy: false         # see below
@@ -211,6 +213,46 @@ must already be running; `forward` does not boot it.
 
 What you open is served by the agent: treat a forwarded page like any other
 agent-authored content, and stop the forward when you are done.
+
+### Using the sandbox from Orca
+
+The [Orca](https://github.com/stablyai/orca) IDE can run its workspaces on an
+SSH host, which lets its agents run inside the sandbox as `devuser`. code-vm
+generates a keypair for this on the host, outside every mount, and installs
+the public half in the guest at every boot.
+
+Lima picks a new forwarded SSH port on each boot, so pin one in
+`config.yaml` and restart the VM:
+
+```yaml
+sshPort: 60022
+```
+
+Then print the values Orca needs:
+
+```bash
+code-vm ssh-target
+```
+
+In Orca, open Settings, SSH, Add target, enter the host, port, user and
+identity file from the output, press Test, then Save. Add the project on that
+host at the repository's path in the guest, which is identical to its host
+path, and create workspaces on it. Workspaces on "Local" keep using the
+host's own Claude. The command also prints an OpenSSH config snippet for use
+with plain `ssh`. It never boots the VM; without a pinned port it can only
+show the port while the VM runs.
+
+Things to know:
+
+- After `code-vm recreate` the guest has a new host key, and Orca refuses the
+  target until you re-trust or re-add it.
+- Orca's remote worktrees default to `~/orca/workspaces` in the guest's home,
+  which host tools cannot see. Point Orca's remote workspace directory inside
+  the repository if that matters.
+- Agent session history is not available in remote workspaces.
+- Deleting a workspace in Orca cannot take the VM down: code-vm boots the VM
+  in its own systemd scope, so it no longer dies with the terminal or process
+  that started it. `code-vm doctor` warns when the host cannot do this.
 
 ### `containerProxy`
 
@@ -427,6 +469,13 @@ These are consequences of the design, not oversights:
   config.
 - **Guest root is reachable from the host** by anyone who can run `limactl` —
   you, never the agent.
+- **Orca's relay is agent-controllable.** Orca installs its relay into the
+  agent's home and trusts what it says; a compromised agent can speak to the
+  Orca app through it, as with any SSH host Orca manages.
+- **SSH sessions run under the agent's resource limits, `code-vm -- ...`
+  sessions do not.** Logins as `devuser` land in its systemd slice
+  (`TasksMax`, `MemoryMax`); sessions started through `sandbox-exec` are
+  children of the admin login and unlimited.
 
 ## Testing
 
