@@ -64,6 +64,12 @@ func Ensure(ctx context.Context, dir, instance string) (Key, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return Key{}, fmt.Errorf("create %s: %w", dir, err)
 	}
+	// The mount guard canonicalizes <config dir>/ssh but not the instance
+	// directory below it, so a symlink here could redirect the private key
+	// into a shared tree. Refuse it instead of following it.
+	if err := refuseSymlink(dir); err != nil {
+		return Key{}, err
+	}
 	// MkdirAll leaves an existing directory's mode alone.
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return Key{}, fmt.Errorf("chmod %s: %w", dir, err)
@@ -112,13 +118,33 @@ func halfKeypair(dir, missing string) error {
 	return fmt.Errorf("%s holds half a keypair (%s is missing); delete the directory to generate a fresh one", dir, missing)
 }
 
+// exists reports whether path is present; a symlink counts as an error, not
+// a key, for the same reason the instance directory refuses one.
 func exists(path string) (bool, error) {
-	_, err := os.Stat(path)
+	fi, err := os.Lstat(path)
 	if err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return false, symlinkError(path)
+		}
 		return true, nil
 	}
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
 	return false, fmt.Errorf("stat %s: %w", path, err)
+}
+
+func refuseSymlink(path string) error {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return symlinkError(path)
+	}
+	return nil
+}
+
+func symlinkError(path string) error {
+	return fmt.Errorf("%s is a symlink; the agent SSH key material must be a real file under the config directory", path)
 }

@@ -665,7 +665,7 @@ assert_fails "ssh as the agent user with Lima's admin key is refused" \
     ssh -F "$(limactl list "$INSTANCE" --format '{{.SSHConfigFile}}')" -o ControlPath=none -o BatchMode=yes \
     -o User="$AGENT_USER" "lima-$INSTANCE" true
 
-if [ "$(adm stat -c '%U %a' "/home/$AGENT_USER/.ssh/authorized_keys")" = "$AGENT_USER 600" ] && [ "$(adm cat "/home/$AGENT_USER/.ssh/authorized_keys" | wc -l)" = "1" ]; then
+if [ "$(adm stat -c '%U %a' "/home/$AGENT_USER/.ssh/authorized_keys")" = "$AGENT_USER 600" ] && [ "$(adm cat "/home/$AGENT_USER/.ssh/authorized_keys" | wc -l)" -eq 1 ]; then
     pass "authorized_keys is agent-owned, 0600, one line"
 else
     fail "authorized_keys is agent-owned, 0600, one line"
@@ -680,14 +680,14 @@ fi
 
 # An agent-planted extra key must not survive ssh-target.
 agent bash -c "echo 'ssh-rsa AAAAPLANTED planted' >> ~/.ssh/authorized_keys" || true
-if [ "$(adm cat "/home/$AGENT_USER/.ssh/authorized_keys" | wc -l)" = "2" ]; then
+if [ "$(adm cat "/home/$AGENT_USER/.ssh/authorized_keys" | wc -l)" -eq 2 ]; then
     pass "the agent can plant a second key (precondition)"
 else
     fail "the agent can plant a second key (precondition)"
 fi
 "${CODE_VM_ARGS[@]}" ssh-target > /dev/null 2>&1
 HOST_PUBKEY=$(tr -d '\n' < "$AGENT_KEY.pub")
-if [ "$(adm cat "/home/$AGENT_USER/.ssh/authorized_keys" | wc -l)" = "1" ] && [ "$(adm cat "/home/$AGENT_USER/.ssh/authorized_keys" | tr -d '\n')" = "$HOST_PUBKEY" ]; then
+if [ "$(adm cat "/home/$AGENT_USER/.ssh/authorized_keys" | wc -l)" -eq 1 ] && [ "$(adm cat "/home/$AGENT_USER/.ssh/authorized_keys" | tr -d '\n')" = "$HOST_PUBKEY" ]; then
     pass "ssh-target restores the single host-issued key over a planted one"
 else
     fail "ssh-target restores the single host-issued key over a planted one"

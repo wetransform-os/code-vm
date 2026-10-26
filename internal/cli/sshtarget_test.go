@@ -171,3 +171,48 @@ func TestSSHTargetReadsLimaPortWhenUnpinned(t *testing.T) {
 		t.Errorf("output:\n%s", out.String())
 	}
 }
+
+func TestRenderSSHTargetQuotesPathsWithSpaces(t *testing.T) {
+	got := renderSSHTarget(sshTarget{Instance: "i", Port: 60022, Pinned: true, User: "u",
+		IdentityFile: "/h/My Config/ssh/i/agent_ed25519", KnownHosts: "/h/My Config/ssh/i/known_hosts"})
+	// The Orca form value stays bare: it is pasted into a field, not parsed.
+	if !strings.Contains(got, "  Identity file: /h/My Config/ssh/i/agent_ed25519\n") {
+		t.Errorf("form value must not be quoted:\n%s", got)
+	}
+	for _, want := range []string{
+		"  IdentityFile \"/h/My Config/ssh/i/agent_ed25519\"\n",
+		"  UserKnownHostsFile \"/h/My Config/ssh/i/known_hosts\"\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("snippet must quote a path with spaces, want %q in:\n%s", want, got)
+		}
+	}
+	plain := renderSSHTarget(sshTarget{Instance: "i", Port: 60022, Pinned: true, User: "u", IdentityFile: "/k", KnownHosts: "/kh"})
+	if strings.Contains(plain, `"`) {
+		t.Errorf("a path without spaces must stay unquoted:\n%s", plain)
+	}
+}
+
+func TestSSHTargetRefusesAnInvalidInstanceBeforeTouchingTheKeyDir(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	projects := t.TempDir()
+	// A traversal in the instance name would otherwise resolve the key
+	// directory outside <config dir>/ssh.
+	if err := os.WriteFile(configPath, []byte("instance: ../../escape\nprojectsRoot: "+projects+"\ncpus: 1\nmemory: 1GiB\ndisk: 10GiB\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fakeAgentKeygen(t)
+	installFakeClient(t, "Stopped")
+	root.SetArgs([]string{"ssh-target"})
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "instance must be") {
+		t.Fatalf("expected the instance validation error, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "ssh")); !os.IsNotExist(statErr) {
+		t.Errorf("no key directory may be created for an invalid instance: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(filepath.Dir(dir), "escape")); !os.IsNotExist(statErr) {
+		t.Errorf("the traversal target must not exist: %v", statErr)
+	}
+}
