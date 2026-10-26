@@ -207,3 +207,14 @@ func TestStartAndStartExistingRunDetached(t *testing.T) {
 		t.Errorf("detached calls = %q, want %q", f.detached, want)
 	}
 }
+
+func TestParseSSHPort(t *testing.T) {
+	cfg := "Host lima-code-sandbox\n  IdentityFile \"/x\"\n  Hostname 127.0.0.1\n  Port 38421\n"
+	got, err := ParseSSHPort(cfg)
+	if err != nil || got != 38421 {
+		t.Errorf("ParseSSHPort = %d, %v; want 38421", got, err)
+	}
+	if _, err := ParseSSHPort("Host x\n"); err == nil {
+		t.Error("a config without Port must be an error")
+	}
+}
