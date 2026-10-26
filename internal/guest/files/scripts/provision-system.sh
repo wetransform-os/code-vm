@@ -264,5 +264,12 @@ fi
 # start it explicitly here too.
 systemctl enable sandbox-boot.service > /dev/null 2>&1 || true
 systemctl start --no-block sandbox-boot.service
+# The early egress unit closes the agent's network from the next boot's
+# sysinit onwards (see the unit). Starting it now too covers the rest of
+# this boot, where the agent's lingering user manager is already up and the
+# firewall is not yet built; init-firewall.sh replaces its rule later.
+systemctl daemon-reload
+systemctl enable sandbox-egress-early.service > /dev/null 2>&1 || true
+systemctl start sandbox-egress-early.service
 
 log "Provisioning complete"

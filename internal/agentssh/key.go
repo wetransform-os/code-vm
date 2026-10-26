@@ -74,6 +74,14 @@ func Ensure(ctx context.Context, dir, instance string) (Key, error) {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return Key{}, fmt.Errorf("chmod %s: %w", dir, err)
 	}
+	// Serialize the check-generate-read sequence across processes: a
+	// concurrent first run would otherwise catch ssh-keygen between its two
+	// files and be told to delete a keypair that is being generated.
+	unlock, err := lockDir(dir)
+	if err != nil {
+		return Key{}, err
+	}
+	defer unlock()
 	k := Key{
 		PrivatePath:    filepath.Join(dir, PrivateKeyName),
 		PublicPath:     filepath.Join(dir, PrivateKeyName+".pub"),

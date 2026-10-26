@@ -1192,6 +1192,30 @@ assert_ok "settings stay locked after restart" \
 
 assert_ok "the pinned SSH port is stable across a restart" agent_ssh true
 
+# Fail-closed boot window: the agent's lingering user manager and sshd come
+# up seconds before sandbox-boot.service builds the firewall. The early unit
+# must have run before both on this boot, and its stopgap rule must be gone
+# again once init-firewall.sh rebuilt OUTPUT.
+unit_started_at() { adm systemctl show -p ActiveEnterTimestampMonotonic --value "$1"; }
+EARLY_AT=$(unit_started_at sandbox-egress-early.service)
+SSHD_AT=$(unit_started_at ssh.service)
+AGENT_MGR_AT=$(unit_started_at "user@$(id -u).service")
+if [[ "$EARLY_AT" =~ ^[0-9]+$ ]] && [ "$EARLY_AT" -gt 0 ] && [ "$EARLY_AT" -lt "$SSHD_AT" ] && [ "$EARLY_AT" -lt "$AGENT_MGR_AT" ]; then
+    pass "the early egress unit ran before sshd and the agent's user manager"
+else
+    fail "the early egress unit ran before sshd and the agent's user manager (early=$EARLY_AT sshd=$SSHD_AT agent-manager=$AGENT_MGR_AT)"
+fi
+if adm journalctl -b -u sandbox-egress-early.service --no-pager 2> /dev/null | grep -q 'has no network beyond loopback'; then
+    pass "the early egress unit installed its rule on this boot"
+else
+    fail "the early egress unit installed its rule on this boot"
+fi
+if adm iptables -S OUTPUT | grep -q -- "! -o lo -m owner --uid-owner $(id -u) -j REJECT"; then
+    fail "init-firewall.sh replaced the early stopgap rule with the full ruleset"
+else
+    pass "init-firewall.sh replaced the early stopgap rule with the full ruleset"
+fi
+
 # Host-config domains must survive a restart — that is the difference from the
 # tmpfs-only mechanism this replaced. init-firewall.sh writes the fragment at
 # boot from provision.env, so the domain is live before any invocation.

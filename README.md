@@ -450,6 +450,11 @@ The perimeter is the VM boundary. Inside it, the agent is separated from guest
 root: `devuser` has no sudo and the rootful Docker daemon is masked, so the
 agent's own rootless `dockerd` cannot be used to become guest root.
 
+The agent never has unfiltered egress, not even while the guest boots: an
+early systemd unit rejects all non-loopback traffic for the agent UID before
+the network, sshd and the agent's user manager come up, and the full firewall
+replaces that rule once the boot sequence builds it.
+
 ### Known limitations
 
 These are consequences of the design, not oversights:

@@ -6,7 +6,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func mode(t *testing.T, path string) os.FileMode {
@@ -160,5 +163,47 @@ func TestEnsureRefusesASymlinkedKeyFile(t *testing.T) {
 	_, err := Ensure(context.Background(), dir, "code-sandbox")
 	if err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("expected a symlink refusal, got %v", err)
+	}
+}
+
+// A first run from several commands at once must generate exactly one
+// keypair and hand every caller the same key: without the lock, a caller
+// arriving between ssh-keygen's two files sees half a keypair.
+func TestEnsureSerializesConcurrentFirstUse(t *testing.T) {
+	var calls atomic.Int32
+	old := Keygen
+	Keygen = func(_ context.Context, path, comment string) error {
+		calls.Add(1)
+		if err := os.WriteFile(path, []byte("PRIVATE\n"), 0o600); err != nil {
+			return err
+		}
+		time.Sleep(50 * time.Millisecond) // the window between the two files
+		return os.WriteFile(path+".pub", []byte("ssh-ed25519 AAAATEST "+comment+"\n"), 0o644)
+	}
+	t.Cleanup(func() { Keygen = old })
+
+	dir := filepath.Join(t.TempDir(), "ssh", "code-sandbox")
+	const n = 4
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	keys := make([]Key, n)
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			keys[i], errs[i] = Ensure(context.Background(), dir, "code-sandbox")
+		}()
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("caller %d: %v", i, err)
+		}
+		if keys[i].AuthorizedLine != keys[0].AuthorizedLine {
+			t.Errorf("caller %d got a different key", i)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("Keygen ran %d times, want 1", got)
 	}
 }
