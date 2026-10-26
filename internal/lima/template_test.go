@@ -469,3 +469,26 @@ func TestRenderSwapSize(t *testing.T) {
 		t.Errorf("rendered template missing SWAP_SIZE=2GiB")
 	}
 }
+
+func TestRenderPinsSSHPortOnlyWhenSet(t *testing.T) {
+	out, err := Render(testConfig(), testParams(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "localPort") {
+		t.Error("default config must leave Lima's random SSH port alone")
+	}
+	c := testConfig()
+	c.SSHPort = 60022
+	out, err = Render(c, testParams(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "  localPort: 60022\n") {
+		t.Errorf("pinned port missing from rendered ssh block:\n%s", out)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("not valid YAML: %v", err)
+	}
+}

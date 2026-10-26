@@ -51,7 +51,11 @@ type Config struct {
 	// memory burst (a Gradle build plus Testcontainers, say) goes straight to
 	// the OOM killer, which picks dockerd first. Swap turns that into
 	// slowness the user can notice and act on. "0B" disables it.
-	Swap           string   `yaml:"swap"`
+	Swap string `yaml:"swap"`
+	// SSHPort pins the host port Lima forwards to the guest's sshd. 0 lets
+	// Lima pick a free port on every boot. Set it to give SSH clients that
+	// store the target (Orca, an ssh_config alias) a stable address.
+	SSHPort        int      `yaml:"sshPort,omitempty"`
 	ExtraDomains   []string `yaml:"extraDomains,omitempty"`
 	ContainerProxy bool     `yaml:"containerProxy"`
 	// Profiles names the customization bundles applied to the guest, in
@@ -129,6 +133,9 @@ func (c Config) Save(path string) error {
 func (c Config) Validate() error {
 	if !instanceRe.MatchString(c.Instance) {
 		return fmt.Errorf("instance must be a Lima instance name like %q, got %q", DefaultInstance, c.Instance)
+	}
+	if c.SSHPort != 0 && (c.SSHPort < 1024 || c.SSHPort > 65535) {
+		return fmt.Errorf("sshPort must be 0 (Lima picks a free port) or between 1024 and 65535, got %d", c.SSHPort)
 	}
 	if c.ProjectsRoot == "" {
 		return errors.New("projectsRoot must be set")
