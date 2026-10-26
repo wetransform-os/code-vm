@@ -269,22 +269,24 @@ func (c Config) MountsExclude(path string) error {
 // an agent-writable profile source would be an allowlist the agent controls.
 //
 // Both sides are canonicalized before comparison; see MountsExclude for why.
-func (c Config) MountsExcludeTree(dir string) error {
+//
+// what names the protected thing in the messages ("the code-vm profiles",
+// "the agent SSH key"); the same tree rule guards both.
+func (c Config) MountsExcludeTree(dir, what string) error {
 	d := CanonicalizeExisting(dir)
 	mounts := canonicalizeAll(c.Mounts())
 	if m, ok := CoveringMount(mounts, d); ok {
 		return fmt.Errorf(
-			"shared directory %s would expose the code-vm profiles (%s) to the agent, "+
-				"which could then widen its own egress allowlist; narrow projectsRoot or the extra mount",
-			m, d)
+			"shared directory %s would expose %s (%s) to the agent; narrow projectsRoot or the extra mount",
+			m, what, d)
 	}
 	for _, m := range mounts {
 		// m == d is already covered above: CoveringMount treats equality as
 		// covering, so a mount exactly at d never reaches this loop.
 		if strings.HasPrefix(m, d+string(filepath.Separator)) {
 			return fmt.Errorf(
-				"shared directory %s lies inside the code-vm profiles directory (%s); "+
-					"the agent must not be able to edit profile sources", m, d)
+				"shared directory %s lies inside the directory holding %s (%s); "+
+					"the agent must not be able to read or edit it", m, what, d)
 		}
 	}
 	return nil

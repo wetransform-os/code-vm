@@ -123,3 +123,9 @@ func TestCanonicalizeExisting(t *testing.T) {
 		}
 	})
 }
+
+func TestSSHDirFor(t *testing.T) {
+	if got := SSHDirFor("/home/st/.config/code-vm/config.yaml"); got != "/home/st/.config/code-vm/ssh" {
+		t.Errorf("SSHDirFor = %q", got)
+	}
+}

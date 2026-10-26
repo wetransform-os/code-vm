@@ -148,3 +148,24 @@ func TestMountFailsBeforeStoppingOnUnmappedSecret(t *testing.T) {
 		t.Errorf("no file may be staged into the guest before resolution succeeds, calls=%v", r.calls)
 	}
 }
+
+func TestMountRefusesSSHKeyDirectory(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	sshDir := filepath.Join(dir, "ssh")
+	if err := os.MkdirAll(sshDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := installFakeClient(t, "Running")
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"mount", sshDir})
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "agent SSH key") {
+		t.Fatalf("error = %v, want an agent SSH key refusal", err)
+	}
+	if len(r.calls) != 0 {
+		t.Errorf("expected no guest interaction, got %v", r.calls)
+	}
+}

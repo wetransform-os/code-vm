@@ -110,7 +110,12 @@ func loadConfig() (config.Config, string, error) {
 	// Profiles feed the egress allowlist too, so the same rule applies to
 	// their directory — including mounts *inside* it, which the config-file
 	// check cannot see.
-	if err := c.MountsExcludeTree(config.ProfilesDirFor(path)); err != nil {
+	if err := c.MountsExcludeTree(config.ProfilesDirFor(path), "the code-vm profiles"); err != nil {
+		return config.Config{}, path, err
+	}
+	// The private key grants shell access as the agent user from outside the
+	// sandbox, so the agent must never be able to read it.
+	if err := c.MountsExcludeTree(config.SSHDirFor(path), "the agent SSH key"); err != nil {
 		return config.Config{}, path, err
 	}
 	return c, path, nil

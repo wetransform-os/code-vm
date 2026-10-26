@@ -283,7 +283,7 @@ func TestMountsExcludeTreeRejectsSymlinkedNonexistentProfilesDir(t *testing.T) {
 	c.ProjectsRoot = mount
 
 	profilesDir := filepath.Join(alias, "profiles")
-	if err := c.MountsExcludeTree(profilesDir); err == nil {
+	if err := c.MountsExcludeTree(profilesDir, "the code-vm profiles"); err == nil {
 		t.Errorf("MountsExcludeTree(%q) = nil, want a refusal (alias resolves into %q)", profilesDir, mount)
 	}
 }
@@ -305,7 +305,7 @@ func TestMountsExcludeTree(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			c := Default()
 			c.ProjectsRoot = tt.mount
-			err := c.MountsExcludeTree(dir)
+			err := c.MountsExcludeTree(dir, "the code-vm profiles")
 			if (err != nil) != tt.wantErr {
 				t.Errorf("MountsExcludeTree(%q) with mount %q = %v, wantErr %v", dir, tt.mount, err, tt.wantErr)
 			}

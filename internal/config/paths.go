@@ -62,6 +62,13 @@ func ProfilesDirFor(configPath string) string {
 	return filepath.Join(filepath.Dir(configPath), "profiles")
 }
 
+// SSHDirFor returns the directory holding the agent SSH keypairs belonging to
+// a config file: an "ssh" directory next to it. Like ProfilesDirFor, it is
+// derived from the config path so a --config test setup stays isolated.
+func SSHDirFor(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), "ssh")
+}
+
 // CanonicalizeExisting resolves symlinks in the longest existing prefix of
 // path and rejoins the remainder, so guards compare real filesystem
 // locations rather than lexical spellings. A symlinked ancestor — a
