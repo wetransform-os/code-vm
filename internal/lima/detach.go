@@ -28,6 +28,14 @@ func DetachPrefix(ctx context.Context, goos string, lookPath func(string) (strin
 		"--description=code-vm VM boot (" + instance + ")", "--"}
 }
 
+// detachFor binds DetachPrefix's host probes and the instance name into the
+// closure ExecRunner calls at boot time.
+func detachFor(instance, goos string, lookPath func(string) (string, error), probe func(context.Context) bool) func(context.Context) []string {
+	return func(ctx context.Context) []string {
+		return DetachPrefix(ctx, goos, lookPath, probe, instance)
+	}
+}
+
 // ProbeUserManager reports whether systemd-run can start a user scope here.
 // systemd-run being installed is not enough: over a bare ssh login or in a
 // container there may be no user manager to talk to.

@@ -55,11 +55,11 @@ func newMountCmd() *cobra.Command {
 			}
 			// Re-run the same guards loadConfig runs, but against the
 			// UPDATED config: loadConfig only ever saw the config as it was
-			// before this new mount, so a mount that targets the config file
-			// or the profiles tree (e.g. `code-vm mount
-			// ~/.config/code-vm/profiles`) would otherwise be saved and
-			// applied, exposing the egress allowlist to the agent until the
-			// next invocation caught it.
+			// before this new mount, so a mount that targets the config file,
+			// the profiles tree or the agent SSH key directory (e.g. `code-vm
+			// mount ~/.config/code-vm/profiles`) would otherwise be saved and
+			// applied, exposing what feeds the egress allowlist or grants
+			// access to the guest until the next invocation caught it.
 			if err := updated.MountsExclude(path); err != nil {
 				return err
 			}

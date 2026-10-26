@@ -183,3 +183,28 @@ func TestResolveWorkdirRejectsUncoveredPathWithActionableError(t *testing.T) {
 		t.Errorf("error must tell the user how to fix it, got %q", msg)
 	}
 }
+
+// The boot path installs the agent's key like `code-vm start` does; Orca can
+// only connect if a bare invocation that boots the VM leaves it in place.
+func TestRunDefaultBootInstallsTheAgentKey(t *testing.T) {
+	root := NewRootCmd()
+	withScratchConfig(t)
+	c, _, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workdir := filepath.Join(c.ProjectsRoot, "repo")
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(workdir)
+	fakeAgentKeygen(t)
+	r := installFakeClient(t, "Stopped")
+	root.SetArgs([]string{})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !r.started() || !ranAny(r.calls, ".ssh/authorized_keys 0600") {
+		t.Errorf("a booting run must push the agent key; calls=%q", r.calls)
+	}
+}

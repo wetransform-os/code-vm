@@ -102,7 +102,7 @@ cpus: 4
 memory: 12GiB
 disk: 100GiB
 swap: 4GiB                    # guest swapfile; 0B disables it — see below
-sshPort: 0                    # fixed host port for the guest's sshd; 0 lets Lima pick — see below
+sshPort: 0                    # fixed host port for the guest's sshd; 0 lets Lima pick — see "Using the sandbox from Orca"
 extraDomains:                 # added to the Squid allowlist
   - registry.mycompany.com
 containerProxy: false         # see below

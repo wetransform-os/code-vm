@@ -20,7 +20,7 @@ import (
 )
 
 // newClient is a package variable so tests can substitute a fake runner.
-var newClient = lima.NewClient
+var newClient = lima.NewClientFor
 
 // agentUser is the guest account the agent runs as. Its UID and GID mirror
 // the host user's so virtiofs-shared files are owned by it.
@@ -30,7 +30,7 @@ const agentUser = "devuser"
 // Every command goes through it: the instance is what keeps a throwaway test VM
 // from acting on the one in daily use, so no command may default it silently.
 func clientFor(c config.Config) lima.Client {
-	cl := newClient()
+	cl := newClient(c.Instance)
 	cl.Instance = c.Instance
 	return cl
 }
