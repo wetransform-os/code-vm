@@ -47,7 +47,10 @@ func newRecreateCmd() *cobra.Command {
 			if _, err := ensureRunning(cmd.Context(), cl, c, profiles); err != nil {
 				return err
 			}
-			return pushRendered(cmd.Context(), cl, c, profiles, rendered, cmd.OutOrStdout())
+			if err := pushRendered(cmd.Context(), cl, c, profiles, rendered, cmd.OutOrStdout()); err != nil {
+				return err
+			}
+			return ensureAgentKey(cmd.Context(), cl, c, cfgPath, cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")

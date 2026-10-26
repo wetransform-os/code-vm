@@ -1,13 +1,17 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/wetransform/code-vm/internal/agentssh"
 	"github.com/wetransform/code-vm/internal/config"
 	"github.com/wetransform/code-vm/internal/lima"
 )
@@ -230,5 +234,53 @@ func TestStartFailsBeforeBootingOnUnmappedSecret(t *testing.T) {
 	}
 	if ranAny(r.calls, "copy") {
 		t.Errorf("no file may be staged into the guest before resolution succeeds, calls=%v", r.calls)
+	}
+}
+
+// fakeAgentKeygen replaces ssh-keygen with a writer of fixed files, restored on cleanup.
+func fakeAgentKeygen(t *testing.T) {
+	t.Helper()
+	old := agentssh.Keygen
+	agentssh.Keygen = func(_ context.Context, path, comment string) error {
+		if err := os.WriteFile(path, []byte("PRIVATE\n"), 0o600); err != nil {
+			return err
+		}
+		return os.WriteFile(path+".pub", []byte("ssh-ed25519 AAAATEST "+comment+"\n"), 0o644)
+	}
+	t.Cleanup(func() { agentssh.Keygen = old })
+}
+
+func TestStartInstallsTheAgentKey(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	fakeAgentKeygen(t)
+	r := installFakeClient(t, "Stopped")
+	root.SetArgs([]string{"start"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !ranAny(r.calls, ".ssh/authorized_keys 0600") {
+		t.Errorf("start did not install the agent key, calls=%q", r.calls)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ssh", "code-sandbox-clitest", "agent_ed25519")); err != nil {
+		t.Errorf("keypair not generated under the config dir: %v", err)
+	}
+}
+
+func TestStartWarnsWhenSSHKeygenIsMissing(t *testing.T) {
+	root := NewRootCmd()
+	withScratchConfig(t)
+	old := agentssh.Keygen
+	agentssh.Keygen = func(context.Context, string, string) error { return fmt.Errorf("ssh-keygen: %w", exec.ErrNotFound) }
+	t.Cleanup(func() { agentssh.Keygen = old })
+	installFakeClient(t, "Stopped")
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetArgs([]string{"start"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("a missing ssh-keygen must not fail the boot: %v", err)
+	}
+	if !strings.Contains(out.String(), "ssh-keygen") {
+		t.Errorf("expected a warning naming ssh-keygen:\n%s", out.String())
 	}
 }

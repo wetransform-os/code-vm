@@ -80,6 +80,9 @@ func runDefault(ctx context.Context, args []string) error {
 		if err := pushRendered(ctx, cl, c, profiles, rendered, os.Stdout); err != nil {
 			return err
 		}
+		if err := ensureAgentKey(ctx, cl, c, cfgPath, os.Stdout); err != nil {
+			return err
+		}
 	}
 	return cl.Agent(ctx, workdir, agentCommand(args))
 }
