@@ -657,6 +657,10 @@ else
 fi
 # ControlPath=none: Lima's config multiplexes over the admin's master, which
 # would otherwise answer as limaadmin no matter which user is asked for.
+# The positive control (Lima's own user) tells a refusal from a failure to connect.
+assert_ok "Lima's admin key reaches the guest as the admin user" \
+    ssh -F "$(limactl list "$INSTANCE" --format '{{.SSHConfigFile}}')" -o ControlPath=none -o BatchMode=yes \
+    "lima-$INSTANCE" true
 assert_fails "ssh as the agent user with Lima's admin key is refused" \
     ssh -F "$(limactl list "$INSTANCE" --format '{{.SSHConfigFile}}')" -o ControlPath=none -o BatchMode=yes \
     -o User="$AGENT_USER" "lima-$INSTANCE" true
@@ -667,16 +671,23 @@ else
     fail "authorized_keys is agent-owned, 0600, one line"
 fi
 # sshd's StrictModes rejects a .ssh with a group or other write bit (2, 3, 6, 7).
-if adm stat -c '%a' "/home/$AGENT_USER/.ssh" | grep -Eq '^7[2367].$|^7.[2367]$'; then
-    fail ".ssh is not group- or world-writable"
-else
+SSH_DIR_MODE=$(adm stat -c '%a' "/home/$AGENT_USER/.ssh" 2> /dev/null || true)
+if [[ "$SSH_DIR_MODE" =~ ^[0-7]{3,4}$ ]] && [[ ! "${SSH_DIR_MODE: -2}" =~ [2367] ]]; then
     pass ".ssh is not group- or world-writable"
+else
+    fail ".ssh is not group- or world-writable (mode: ${SSH_DIR_MODE:-unreadable})"
 fi
 
 # An agent-planted extra key must not survive ssh-target.
-agent bash -c "echo 'ssh-rsa AAAAPLANTED planted' >> ~/.ssh/authorized_keys"
+agent bash -c "echo 'ssh-rsa AAAAPLANTED planted' >> ~/.ssh/authorized_keys" || true
+if [ "$(adm cat "/home/$AGENT_USER/.ssh/authorized_keys" | wc -l)" = "2" ]; then
+    pass "the agent can plant a second key (precondition)"
+else
+    fail "the agent can plant a second key (precondition)"
+fi
 "${CODE_VM_ARGS[@]}" ssh-target > /dev/null 2>&1
-if [ "$(adm cat "/home/$AGENT_USER/.ssh/authorized_keys" | wc -l)" = "1" ]; then
+HOST_PUBKEY=$(tr -d '\n' < "$AGENT_KEY.pub")
+if [ "$(adm cat "/home/$AGENT_USER/.ssh/authorized_keys" | wc -l)" = "1" ] && [ "$(adm cat "/home/$AGENT_USER/.ssh/authorized_keys" | tr -d '\n')" = "$HOST_PUBKEY" ]; then
     pass "ssh-target restores the single host-issued key over a planted one"
 else
     fail "ssh-target restores the single host-issued key over a planted one"
@@ -688,18 +699,27 @@ else
     fail "an SSH login runs inside the agent's resource slice"
 fi
 
-LOCK_BEFORE=$(adm sha256sum "/home/$AGENT_USER/.claude/settings.json" "/home/$AGENT_USER/.claude/settings.local.json")
-agent_ssh claude --version > /dev/null 2>&1 || true
-LOCK_AFTER=$(adm sha256sum "/home/$AGENT_USER/.claude/settings.json" "/home/$AGENT_USER/.claude/settings.local.json")
-if [ "$LOCK_BEFORE" = "$LOCK_AFTER" ]; then
+LOCK_BEFORE=$(adm sha256sum "/home/$AGENT_USER/.claude/settings.json" "/home/$AGENT_USER/.claude/settings.local.json" 2>&1 || true)
+# A login shell: ~/.local/bin, where Claude lives, is on the PATH of login
+# shells only, not of a bare `ssh host cmd`.
+# stdin from /dev/null: claude treats a piped stdin as print mode input.
+CLAUDE_VERSION_OUT=$(agent_ssh "bash -lc 'claude --version'" < /dev/null 2> /dev/null || true)
+if [[ "$CLAUDE_VERSION_OUT" == *"Claude Code"* ]]; then
+    pass "claude launches over SSH (got: $CLAUDE_VERSION_OUT)"
+else
+    fail "claude launches over SSH (got: $CLAUDE_VERSION_OUT)"
+fi
+LOCK_AFTER=$(adm sha256sum "/home/$AGENT_USER/.claude/settings.json" "/home/$AGENT_USER/.claude/settings.local.json" 2>&1 || true)
+if [ "$(echo "$LOCK_BEFORE" | grep -cE '^[0-9a-f]{64} ')" = "2" ] && [ "$LOCK_BEFORE" = "$LOCK_AFTER" ]; then
     pass "an SSH login and claude launch leave the locked settings untouched"
 else
     fail "an SSH login and claude launch leave the locked settings untouched"
 fi
-if agent_ssh env | grep -q '^CLAUDE_CONFIG_DIR='; then
-    fail "no Claude config-directory override reaches an SSH login"
-else
+SSH_ENV=$(agent_ssh env 2> /dev/null || true)
+if echo "$SSH_ENV" | grep -q '^HOME=' && ! echo "$SSH_ENV" | grep -q '^CLAUDE_CONFIG_DIR='; then
     pass "no Claude config-directory override reaches an SSH login"
+else
+    fail "no Claude config-directory override reaches an SSH login"
 fi
 
 echo ""
@@ -1128,7 +1148,8 @@ yq -i '.swap = "0B"' "$CONFIG_FILE"
 # incident: Lima's host agent used to inherit the booting process's cgroup,
 # so stopping that scope (an Orca workspace delete) killed the VM. Boot
 # from inside a throwaway scope, stop the scope, and the VM must survive.
-if [ "$(uname)" = Linux ] && [[ "$(systemctl --user is-system-running 2> /dev/null)" =~ ^(running|degraded)$ ]]; then
+SYSTEMD_USER_STATE=$(systemctl --user is-system-running 2> /dev/null || true)
+if [ "$(uname)" = Linux ] && [[ "$SYSTEMD_USER_STATE" =~ ^(running|degraded)$ ]]; then
     BOOT_SCOPE="code-vm-suite-$$"
     systemd-run --user --scope --quiet --collect --unit="$BOOT_SCOPE" -- "${CODE_VM_ARGS[@]}" start > /dev/null 2>&1
     systemctl --user stop "$BOOT_SCOPE.scope" 2> /dev/null || true
@@ -1140,7 +1161,7 @@ if [ "$(uname)" = Linux ] && [[ "$(systemctl --user is-system-running 2> /dev/nu
         "${CODE_VM_ARGS[@]}" start > /dev/null 2>&1
     fi
 else
-    echo "  SKIP: the scope-survival check needs a Linux systemd user manager"
+    echo "  SKIP: the scope-survival check needs a Linux systemd user manager (state: ${SYSTEMD_USER_STATE:-none})"
     "${CODE_VM_ARGS[@]}" start > /dev/null 2>&1
 fi
 
