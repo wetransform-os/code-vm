@@ -30,6 +30,8 @@ func TestDataFilesMapsGuestPaths(t *testing.T) {
 		{"/usr/local/bin/sandbox-exec", "0755"},
 		{"/usr/local/lib/sandbox/provision-system.sh", "0755"},
 		{"/etc/systemd/system/sandbox-boot.service", "0644"},
+		{"/etc/systemd/system/sandbox-egress-early.service", "0644"},
+		{"/usr/local/lib/sandbox/early-egress.sh", "0755"},
 		{"/usr/local/share/sandbox-config/.claude/settings.json", "0444"},
 	} {
 		f, ok := byPath[want.path]

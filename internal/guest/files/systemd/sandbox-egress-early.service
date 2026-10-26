@@ -1,0 +1,26 @@
+[Unit]
+Description=code-vm fail-closed agent egress until the firewall is built
+# The firewall is built late, by sandbox-boot.service after cloud-final. The
+# agent user lingers, so its systemd user manager (and every unit it enabled)
+# starts at boot long before that, and sshd answers the host's port forward
+# just as early. Without this unit, agent-controlled code had unfiltered
+# egress for the seconds between the two. This rejects everything but
+# loopback for the agent UID until init-firewall.sh flushes OUTPUT and builds
+# the real rules; if the boot sequence never gets there, the rejection stays.
+DefaultDependencies=no
+ConditionPathExists=/etc/sandbox/provision.env
+After=local-fs.target
+Before=network-pre.target ssh.service systemd-user-sessions.service
+Before=shutdown.target
+Wants=network-pre.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/sandbox/early-egress.sh
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=sysinit.target
