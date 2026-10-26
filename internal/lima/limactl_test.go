@@ -8,9 +8,18 @@ import (
 )
 
 type fakeRunner struct {
-	calls  [][]string
-	out    []byte
-	outErr error
+	calls [][]string
+	// detached records RunDetached calls separately so tests can tell a boot
+	// from an ordinary Run.
+	detached [][]string
+	out      []byte
+	outErr   error
+}
+
+func (f *fakeRunner) RunDetached(_ context.Context, args ...string) error {
+	f.detached = append(f.detached, args)
+	f.calls = append(f.calls, args)
+	return nil
 }
 
 func (f *fakeRunner) Run(_ context.Context, args ...string) error {
@@ -178,5 +187,23 @@ func TestShellArgsRunsAsLimaadminWithoutSudo(t *testing.T) {
 	want := []string{"shell", InstanceName, "id", "-un"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ShellArgs(cmd) = %v, want %v", got, want)
+	}
+}
+
+func TestStartAndStartExistingRunDetached(t *testing.T) {
+	f := &fakeRunner{}
+	c := Client{R: f}
+	if err := c.Start(context.Background(), "/tmp/inst.yaml"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.StartExisting(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{
+		{"start", "--tty=false", "--name", InstanceName, "/tmp/inst.yaml"},
+		{"start", "--tty=false", InstanceName},
+	}
+	if !reflect.DeepEqual(f.detached, want) {
+		t.Errorf("detached calls = %q, want %q", f.detached, want)
 	}
 }

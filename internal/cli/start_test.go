@@ -25,6 +25,12 @@ func (r *recordingRunner) Run(_ context.Context, args ...string) error {
 	return nil
 }
 
+// RunDetached records into calls so started() sees boots too.
+func (r *recordingRunner) RunDetached(_ context.Context, args ...string) error {
+	r.calls = append(r.calls, args)
+	return nil
+}
+
 func (r *recordingRunner) Output(_ context.Context, args ...string) ([]byte, error) {
 	r.calls = append(r.calls, args)
 	joined := strings.Join(args, " ")

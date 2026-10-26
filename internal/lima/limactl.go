@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 )
 
@@ -14,6 +15,9 @@ import (
 // tested without a VM.
 type Runner interface {
 	Run(ctx context.Context, args ...string) error
+	// RunDetached is Run for commands that start the VM: they must outlive the
+	// terminal or pane that invoked them.
+	RunDetached(ctx context.Context, args ...string) error
 	Output(ctx context.Context, args ...string) ([]byte, error)
 }
 
@@ -23,6 +27,9 @@ type ExecRunner struct {
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
+	// Detach returns the argv prefix that moves a boot out of the caller's
+	// cgroup, or nil to run it as is. Nil Detach means no prefix.
+	Detach func(ctx context.Context) []string
 }
 
 func (e ExecRunner) command(ctx context.Context, args ...string) *exec.Cmd {
@@ -39,6 +46,29 @@ func (e ExecRunner) Run(ctx context.Context, args ...string) error {
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = e.Stdin, e.Stdout, e.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("limactl %s: %w", strings.Join(args, " "), err)
+	}
+	return nil
+}
+
+// RunDetached runs limactl like Run, wrapped in Detach's prefix when there is
+// one, so the VM survives its terminal being torn down.
+func (e ExecRunner) RunDetached(ctx context.Context, args ...string) error {
+	var prefix []string
+	if e.Detach != nil {
+		prefix = e.Detach(ctx)
+	}
+	if len(prefix) == 0 {
+		return e.Run(ctx, args...)
+	}
+	bin := e.Bin
+	if bin == "" {
+		bin = "limactl"
+	}
+	name, full := detachedArgv(prefix, bin, args)
+	cmd := exec.CommandContext(ctx, name, full...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = e.Stdin, e.Stdout, e.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("limactl %s (via systemd-run): %w", strings.Join(args, " "), err)
 	}
 	return nil
 }
@@ -74,7 +104,12 @@ func (c Client) instance() string {
 // NewClient returns a Client wired to the real limactl and this process's
 // standard streams.
 func NewClient() Client {
-	return Client{R: ExecRunner{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr}}
+	return Client{R: ExecRunner{
+		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
+		Detach: func(ctx context.Context) []string {
+			return DetachPrefix(ctx, runtime.GOOS, exec.LookPath, ProbeUserManager, InstanceName)
+		},
+	}}
 }
 
 // AgentArgs builds the argv that runs cmd as the agent user in workdir.
@@ -152,14 +187,14 @@ func (c Client) Status(ctx context.Context) (string, error) {
 
 // Start creates or starts the instance from the rendered template.
 func (c Client) Start(ctx context.Context, tplPath string) error {
-	return c.R.Run(ctx, "start", "--tty=false", "--name", c.instance(), tplPath)
+	return c.R.RunDetached(ctx, "start", "--tty=false", "--name", c.instance(), tplPath)
 }
 
 // StartExisting boots an already-created instance from its stored config.
 // `limactl start --name <name> <file>` refuses to run when the instance
 // exists, so updates go through ResolveConfigInto first.
 func (c Client) StartExisting(ctx context.Context) error {
-	return c.R.Run(ctx, "start", "--tty=false", c.instance())
+	return c.R.RunDetached(ctx, "start", "--tty=false", c.instance())
 }
 
 // InstanceDir returns the instance's data directory on the host.

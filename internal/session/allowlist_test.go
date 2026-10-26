@@ -28,6 +28,11 @@ func (f *fakeRunner) Run(_ context.Context, args ...string) error {
 	return nil
 }
 
+// RunDetached behaves like Run: session code never boots the VM.
+func (f *fakeRunner) RunDetached(ctx context.Context, args ...string) error {
+	return f.Run(ctx, args...)
+}
+
 func (f *fakeRunner) Output(_ context.Context, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, args)
 	joined := strings.Join(args, " ")
