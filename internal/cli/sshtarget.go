@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -14,8 +15,10 @@ import (
 // sshTarget is what an SSH client needs to reach the agent user in the guest.
 type sshTarget struct {
 	Instance     string
-	Port         int  // 0 when unknown
+	Port         int  // the port to connect to; 0 when unknown
 	Pinned       bool // from config.sshPort
+	Running      bool
+	LivePort     int // what Lima's ssh config says the running VM uses; 0 when unknown
 	User         string
 	IdentityFile string
 	KnownHosts   string
@@ -29,10 +32,22 @@ func renderSSHTarget(t sshTarget) string {
 	fmt.Fprintf(&b, "Orca / SSH target for instance %s\n", t.Instance)
 	b.WriteString("  Host:          127.0.0.1\n")
 	switch {
+	case t.Port == 0 && t.Running:
+		b.WriteString("  Port:          unknown (could not read Lima's ssh config; set sshPort in config.yaml to pin one)\n")
 	case t.Port == 0:
 		b.WriteString("  Port:          unknown (VM not running; set sshPort in config.yaml to pin one)\n")
 	case t.Pinned:
+		// A pinned port only takes effect at the next boot, so a running VM
+		// may still listen elsewhere; a snippet with the wrong port would
+		// fail confusingly.
 		fmt.Fprintf(&b, "  Port:          %d\n", t.Port)
+		switch {
+		case !t.Running:
+		case t.LivePort == 0:
+			b.WriteString("  (warning: could not read Lima's ssh config to confirm the live port)\n")
+		case t.LivePort != t.Port:
+			fmt.Fprintf(&b, "  (warning: sshPort %d is not applied yet; the running VM still listens on %d — restart it with code-vm stop && code-vm start)\n", t.Port, t.LivePort)
+		}
 	default:
 		fmt.Fprintf(&b, "  Port:          %d\n", t.Port)
 		b.WriteString("  (warning: sshPort is not set in config.yaml, so this port changes on every boot)\n")
@@ -77,19 +92,15 @@ func newSSHTargetCmd() *cobra.Command {
 				return err
 			}
 
+			// Reading the live port is best effort: the key install below
+			// matters more, so an unreadable ssh config only degrades the output.
+			live := 0
+			if running {
+				live = liveSSHPort(ctx, cl)
+			}
 			port := c.SSHPort
-			if port == 0 && running {
-				file, err := cl.SSHConfigFile(ctx)
-				if err != nil {
-					return err
-				}
-				data, err := os.ReadFile(file)
-				if err != nil {
-					return err
-				}
-				if port, err = lima.ParseSSHPort(string(data)); err != nil {
-					return err
-				}
+			if port == 0 {
+				port = live
 			}
 
 			out := cmd.OutOrStdout()
@@ -106,6 +117,8 @@ func newSSHTargetCmd() *cobra.Command {
 				Instance:     c.Instance,
 				Port:         port,
 				Pinned:       c.SSHPort != 0,
+				Running:      running,
+				LivePort:     live,
 				User:         agentUser,
 				IdentityFile: key.PrivatePath,
 				KnownHosts:   key.KnownHostsPath,
@@ -113,4 +126,22 @@ func newSSHTargetCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// liveSSHPort returns the port the running VM's sshd is forwarded to, or 0
+// when Lima's ssh config cannot be read or parsed.
+func liveSSHPort(ctx context.Context, cl lima.Client) int {
+	file, err := cl.SSHConfigFile(ctx)
+	if err != nil {
+		return 0
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return 0
+	}
+	port, err := lima.ParseSSHPort(string(data))
+	if err != nil {
+		return 0
+	}
+	return port
 }

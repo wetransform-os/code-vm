@@ -61,26 +61,93 @@ func TestSSHTargetNeverBoots(t *testing.T) {
 	}
 }
 
-func TestSSHTargetUsesPinnedPortAndInstallsMissingKey(t *testing.T) {
+func writeSSHConfig(t *testing.T, port string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "ssh.config")
+	if err := os.WriteFile(p, []byte("Host lima-code-sandbox-clitest\n  Port "+port+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestRenderSSHTargetLiveness(t *testing.T) {
+	base := sshTarget{Instance: "i", Pinned: true, Port: 60022, Running: true, User: "u", IdentityFile: "/k", KnownHosts: "/kh"}
+	mismatch := base
+	mismatch.LivePort = 38421
+	got := renderSSHTarget(mismatch)
+	if !strings.Contains(got, "  Port:          60022\n  (warning: sshPort 60022 is not applied yet; the running VM still listens on 38421 — restart it with code-vm stop && code-vm start)\n  User:") {
+		t.Errorf("mismatch output:\n%s", got)
+	}
+	unknown := base
+	got = renderSSHTarget(unknown)
+	if !strings.Contains(got, "  Port:          60022\n  (warning: could not read Lima's ssh config to confirm the live port)\n") {
+		t.Errorf("unknown live port output:\n%s", got)
+	}
+	same := base
+	same.LivePort = 60022
+	stopped := base
+	stopped.Running = false
+	if a, b := renderSSHTarget(same), renderSSHTarget(stopped); a != b || strings.Contains(a, "warning") {
+		t.Errorf("equal live port / stopped must not warn:\n%s\n%s", a, b)
+	}
+	un := sshTarget{Instance: "i", Running: true, User: "u", IdentityFile: "/k", KnownHosts: "/kh"}
+	got = renderSSHTarget(un)
+	if !strings.Contains(got, "  Port:          unknown (could not read Lima's ssh config; set sshPort in config.yaml to pin one)\n") || strings.Contains(got, "Host code-vm-") {
+		t.Errorf("unpinned running unknown:\n%s", got)
+	}
+}
+
+func runSSHTarget(t *testing.T, sshCfg string) (string, *recordingRunner, error) {
+	t.Helper()
 	root := NewRootCmd()
 	withScratchConfig(t)
 	appendConfig(t, "sshPort: 60122\n")
 	fakeAgentKeygen(t)
 	r := installFakeClient(t, "Running") // ReadFile of authorized_keys returns "Running" too: not the key, so a push follows
+	r.outputs = map[string]string{"{{.SSHConfigFile}}": sshCfg}
 	var out bytes.Buffer
 	root.SetOut(&out)
 	root.SetArgs([]string{"ssh-target"})
-	if err := root.Execute(); err != nil {
+	err := root.Execute()
+	return out.String(), r, err
+}
+
+func TestSSHTargetUsesPinnedPortAndInstallsMissingKey(t *testing.T) {
+	out, r, err := runSSHTarget(t, writeSSHConfig(t, "60122"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "  Port:          60122\n") {
-		t.Errorf("pinned port not shown:\n%s", out.String())
+	if !strings.Contains(out, "  Port:          60122\n") || strings.Contains(out, "warning") {
+		t.Errorf("pinned port matching the live one must show no warning:\n%s", out)
 	}
-	if !ranAny(r.calls, ".ssh/authorized_keys 0600") || !strings.Contains(out.String(), "Installed the agent's SSH key into the running VM.") {
-		t.Errorf("a running VM without the key must get it installed; calls=%q out=%s", r.calls, out.String())
+	if !ranAny(r.calls, ".ssh/authorized_keys 0600") || !strings.Contains(out, "Installed the agent's SSH key into the running VM.") {
+		t.Errorf("a running VM without the key must get it installed; calls=%q out=%s", r.calls, out)
 	}
-	if ranAny(r.calls, "{{.SSHConfigFile}}") {
-		t.Error("a pinned port needs no look at Lima's ssh config")
+}
+
+func TestSSHTargetWarnsWhenPinnedPortNotApplied(t *testing.T) {
+	out, r, err := runSSHTarget(t, writeSSHConfig(t, "38421"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "warning: sshPort 60122 is not applied yet; the running VM still listens on 38421") {
+		t.Errorf("output:\n%s", out)
+	}
+	if !ranAny(r.calls, ".ssh/authorized_keys 0600") {
+		t.Error("key must still be installed")
+	}
+}
+
+func TestSSHTargetUnreadableSSHConfigOnlyWarns(t *testing.T) {
+	out, r, err := runSSHTarget(t, filepath.Join(t.TempDir(), "missing"))
+	if err != nil {
+		t.Fatalf("an unreadable ssh config must not fail the command: %v", err)
+	}
+	if !strings.Contains(out, "warning: could not read Lima's ssh config to confirm the live port") {
+		t.Errorf("output:\n%s", out)
+	}
+	if !ranAny(r.calls, ".ssh/authorized_keys 0600") {
+		t.Error("key must still be installed")
 	}
 }
 
