@@ -325,3 +325,18 @@ func TestValidateVars(t *testing.T) {
 		t.Errorf("Validate = %v, want vars key rejection", err)
 	}
 }
+
+func TestValidateSSHPort(t *testing.T) {
+	for _, tc := range []struct {
+		port int
+		ok   bool
+	}{{0, true}, {1024, true}, {60022, true}, {65535, true}, {22, false}, {1023, false}, {65536, false}, {-1, false}} {
+		c := Default()
+		c.ProjectsRoot = "/home/st/projects"
+		c.SSHPort = tc.port
+		err := c.Validate()
+		if (err == nil) != tc.ok {
+			t.Errorf("sshPort %d: err = %v, want ok=%v", tc.port, err, tc.ok)
+		}
+	}
+}

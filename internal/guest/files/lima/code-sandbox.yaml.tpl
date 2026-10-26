@@ -34,6 +34,10 @@ user:
   passwordlessSudo: true
 
 ssh:
+{{- if .Config.SSHPort}}
+  # Pinned by sshPort so an SSH target stored elsewhere stays valid across boots.
+  localPort: {{.Config.SSHPort}}
+{{- end}}
   # Do not copy host SSH public keys into the guest.
   loadDotSSHPubKeys: false
 
