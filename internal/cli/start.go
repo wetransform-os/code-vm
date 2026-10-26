@@ -178,7 +178,10 @@ func newStartCmd() *cobra.Command {
 			if _, err := ensureRunning(ctx, cl, c, profiles); err != nil {
 				return err
 			}
-			return pushRendered(ctx, cl, c, profiles, rendered, cmd.OutOrStdout())
+			if err := pushRendered(ctx, cl, c, profiles, rendered, cmd.OutOrStdout()); err != nil {
+				return err
+			}
+			return ensureAgentKey(ctx, cl, c, cfgPath, cmd.OutOrStdout())
 		},
 	}
 }

@@ -108,6 +108,11 @@ func TestRunDefaultRunningFastPathSkipsResolution(t *testing.T) {
 	if ranAny(r.calls, ".npmrc") {
 		t.Errorf("fast path must not render/push templates, calls=%v", r.calls)
 	}
+	// Not install-user-file.sh as a whole: session.Setup already relays the
+	// git identity on every run.
+	if ranAny(r.calls, ".ssh/authorized_keys") {
+		t.Errorf("fast path must not push the agent key, calls=%v", r.calls)
+	}
 }
 
 // countStatusCalls reports how many times the runner was asked for `limactl
