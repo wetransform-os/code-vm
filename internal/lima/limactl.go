@@ -101,14 +101,16 @@ func (c Client) instance() string {
 	return InstanceName
 }
 
-// NewClient returns a Client wired to the real limactl and this process's
-// standard streams.
-func NewClient() Client {
-	return Client{R: ExecRunner{
+// NewClient returns a Client for the default instance wired to the real
+// limactl and this process's standard streams.
+func NewClient() Client { return NewClientFor(InstanceName) }
+
+// NewClientFor is NewClient for a named instance; the name also labels the
+// boot's systemd scope so concurrent VMs are told apart in systemctl.
+func NewClientFor(instance string) Client {
+	return Client{Instance: instance, R: ExecRunner{
 		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
-		Detach: func(ctx context.Context) []string {
-			return DetachPrefix(ctx, runtime.GOOS, exec.LookPath, ProbeUserManager, InstanceName)
-		},
+		Detach: detachFor(instance, runtime.GOOS, exec.LookPath, ProbeUserManager),
 	}}
 }
 

@@ -579,7 +579,7 @@ func installFakeClient(t *testing.T, status string) *recordingRunner {
 	t.Helper()
 	r := &recordingRunner{statusOut: status}
 	old := newClient
-	newClient = func() lima.Client { return lima.Client{R: r} }
+	newClient = func(string) lima.Client { return lima.Client{R: r} }
 	t.Cleanup(func() { newClient = old })
 	return r
 }

@@ -265,8 +265,11 @@ func (c Config) MountsExclude(path string) error {
 // MountsExcludeTree reports an error if any shared directory overlaps dir in
 // either direction: a mount above dir exposes it wholesale, and a mount at or
 // below it exposes part of it. MountsExclude cannot cover the second case —
-// it guards a single file path — and profiles feed the egress allowlist, so
-// an agent-writable profile source would be an allowlist the agent controls.
+// it guards a single file path — and what it protects either feeds the
+// egress allowlist (profiles: an agent-writable source would be an allowlist
+// the agent controls) or grants access to the guest (the agent SSH key
+// directory: a readable private key lets the agent impersonate the operator's
+// Orca connection).
 //
 // Both sides are canonicalized before comparison; see MountsExclude for why.
 //

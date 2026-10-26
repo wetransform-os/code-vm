@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -53,5 +54,20 @@ func TestExecRunnerRunDetachedUsesThePrefix(t *testing.T) {
 	}
 	if err := (ExecRunner{Bin: "true"}).RunDetached(context.Background(), "start"); err != nil {
 		t.Fatalf("RunDetached with nil Detach: %v", err)
+	}
+}
+
+func TestDetachForNamesTheConfiguredInstance(t *testing.T) {
+	found := func(string) (string, error) { return "/usr/bin/systemd-run", nil }
+	yes := func(context.Context) bool { return true }
+	got := detachFor("code-sandbox-test", "linux", found, yes)(context.Background())
+	var desc string
+	for _, a := range got {
+		if strings.HasPrefix(a, "--description=") {
+			desc = a
+		}
+	}
+	if desc != "--description=code-vm VM boot (code-sandbox-test)" {
+		t.Errorf("prefix %q must carry the configured instance", got)
 	}
 }
