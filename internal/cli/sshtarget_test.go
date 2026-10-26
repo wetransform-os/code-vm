@@ -103,7 +103,7 @@ func runSSHTarget(t *testing.T, sshCfg string) (string, *recordingRunner, error)
 	withScratchConfig(t)
 	appendConfig(t, "sshPort: 60122\n")
 	fakeAgentKeygen(t)
-	r := installFakeClient(t, "Running") // ReadFile of authorized_keys returns "Running" too: not the key, so a push follows
+	r := installFakeClient(t, "Running")
 	r.outputs = map[string]string{"{{.SSHConfigFile}}": sshCfg}
 	var out bytes.Buffer
 	root.SetOut(&out)
@@ -112,7 +112,7 @@ func runSSHTarget(t *testing.T, sshCfg string) (string, *recordingRunner, error)
 	return out.String(), r, err
 }
 
-func TestSSHTargetUsesPinnedPortAndInstallsMissingKey(t *testing.T) {
+func TestSSHTargetUsesPinnedPortAndInstallsTheKey(t *testing.T) {
 	out, r, err := runSSHTarget(t, writeSSHConfig(t, "60122"))
 	if err != nil {
 		t.Fatal(err)
@@ -120,8 +120,16 @@ func TestSSHTargetUsesPinnedPortAndInstallsMissingKey(t *testing.T) {
 	if !strings.Contains(out, "  Port:          60122\n") || strings.Contains(out, "warning") {
 		t.Errorf("pinned port matching the live one must show no warning:\n%s", out)
 	}
-	if !ranAny(r.calls, ".ssh/authorized_keys 0600") || !strings.Contains(out, "Installed the agent's SSH key into the running VM.") {
-		t.Errorf("a running VM without the key must get it installed; calls=%q out=%s", r.calls, out)
+	if !ranAny(r.calls, ".ssh/authorized_keys 0600") {
+		t.Errorf("a running VM must get the key installed; calls=%q", r.calls)
+	}
+	// The agent owns authorized_keys, so it must never be read back on the
+	// host: a symlink to /dev/zero or a FIFO would exhaust or hang the host.
+	for _, call := range r.calls {
+		s := strings.Join(call, " ")
+		if strings.Contains(s, "cat -- ") && strings.Contains(s, "authorized_keys") {
+			t.Errorf("ssh-target must not read the agent-owned authorized_keys: %q", call)
+		}
 	}
 }
 

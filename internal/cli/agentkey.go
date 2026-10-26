@@ -16,11 +16,18 @@ import (
 
 // prepareAgentAccess readies a freshly booted guest for sessions that start
 // over SSH rather than through `code-vm`: the git identity, which the default
-// command otherwise applies per invocation, and the agent's SSH key. Without
-// this, a VM booted with `code-vm start` and only ever used from Orca would
-// make unattributed commits.
-func prepareAgentAccess(ctx context.Context, cl lima.Client, c config.Config, profiles []profile.Profile, cfgPath string, out io.Writer) error {
+// command otherwise applies per invocation, the rendered profile templates,
+// and the agent's SSH key. Without the identity, a VM booted with `code-vm
+// start` and only ever used from Orca would make unattributed commits.
+//
+// Order matters and mirrors the default command (session.Setup, then
+// pushRendered): the identity is a minimal [user] block, so a profile that
+// ships its own .gitconfig template must land after it and win.
+func prepareAgentAccess(ctx context.Context, cl lima.Client, c config.Config, profiles []profile.Profile, rendered []profile.Rendered, cfgPath string, out io.Writer) error {
 	if err := session.ApplyGitIdentity(ctx, agentDeps(cl, c, profiles)); err != nil {
+		return err
+	}
+	if err := pushRendered(ctx, cl, c, profiles, rendered, out); err != nil {
 		return err
 	}
 	return ensureAgentKey(ctx, cl, c, cfgPath, out)
