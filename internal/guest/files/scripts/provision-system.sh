@@ -135,14 +135,16 @@ EOF
 
 # ── Resource limits ──────────────────────────────────────────────────────────
 # Replaces the container sandbox's --pids-limit. MemoryMax leaves headroom for
-# the guest OS and Squid.
+# the guest OS and Squid. SSH logins as the agent (Orca's relay and Node
+# runtime, Claude, Gradle and Testcontainers runs) share this slice with
+# rootless Docker, which the former 2048 tasks did not allow for.
 TOTAL_KB=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
 MEM_MAX_MB=$((TOTAL_KB / 1024 - 2048))
 [ "$MEM_MAX_MB" -lt 1024 ] && MEM_MAX_MB=1024
 install -d "/etc/systemd/system/user-${AGENT_UID}.slice.d"
 cat > "/etc/systemd/system/user-${AGENT_UID}.slice.d/50-sandbox.conf" << EOF
 [Slice]
-TasksMax=2048
+TasksMax=8192
 MemoryMax=${MEM_MAX_MB}M
 EOF
 systemctl daemon-reload
