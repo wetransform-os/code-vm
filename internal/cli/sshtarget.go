@@ -62,10 +62,20 @@ func renderSSHTarget(t sshTarget) string {
 	b.WriteString("  HostName 127.0.0.1\n")
 	fmt.Fprintf(&b, "  Port %d\n", t.Port)
 	fmt.Fprintf(&b, "  User %s\n", t.User)
-	fmt.Fprintf(&b, "  IdentityFile %s\n", t.IdentityFile)
+	fmt.Fprintf(&b, "  IdentityFile %s\n", sshConfigArg(t.IdentityFile))
 	b.WriteString("  IdentitiesOnly yes\n")
-	fmt.Fprintf(&b, "  UserKnownHostsFile %s\n", t.KnownHosts)
+	fmt.Fprintf(&b, "  UserKnownHostsFile %s\n", sshConfigArg(t.KnownHosts))
 	return b.String()
+}
+
+// sshConfigArg quotes a path for an ssh_config line when it contains
+// whitespace: unquoted, IdentityFile rejects the extra words as garbage and
+// UserKnownHostsFile reads them as further files.
+func sshConfigArg(path string) string {
+	if strings.ContainsAny(path, " \t") {
+		return `"` + path + `"`
+	}
+	return path
 }
 
 func newSSHTargetCmd() *cobra.Command {
@@ -77,6 +87,13 @@ func newSSHTargetCmd() *cobra.Command {
 			ctx := cmd.Context()
 			c, cfgPath, err := loadConfig()
 			if err != nil {
+				return err
+			}
+			// The boot path validates before it touches the key directory;
+			// this command reaches it without booting, so it must check the
+			// instance name itself or a traversal in config.yaml would land
+			// the keypair outside the SSH directory.
+			if err := c.Validate(); err != nil {
 				return err
 			}
 			cl := clientFor(c)

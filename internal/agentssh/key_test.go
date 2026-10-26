@@ -118,3 +118,47 @@ func TestEnsureWithRealSSHKeygen(t *testing.T) {
 		t.Errorf("AuthorizedLine = %q", k.AuthorizedLine)
 	}
 }
+
+func TestEnsureRefusesASymlinkedInstanceDir(t *testing.T) {
+	fakeKeygen(t)
+	root := t.TempDir()
+	target := filepath.Join(root, "shared")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "ssh", "code-sandbox")
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, dir); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Ensure(context.Background(), dir, "code-sandbox")
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected a symlink refusal, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(target, PrivateKeyName)); !os.IsNotExist(statErr) {
+		t.Errorf("no key may be written through the symlink: %v", statErr)
+	}
+}
+
+func TestEnsureRefusesASymlinkedKeyFile(t *testing.T) {
+	fakeKeygen(t)
+	root := t.TempDir()
+	dir := filepath.Join(root, "ssh", "code-sandbox")
+	if _, err := Ensure(context.Background(), dir, "code-sandbox"); err != nil {
+		t.Fatal(err)
+	}
+	priv := filepath.Join(dir, PrivateKeyName)
+	elsewhere := filepath.Join(root, "elsewhere")
+	if err := os.Rename(priv, elsewhere); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, priv); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Ensure(context.Background(), dir, "code-sandbox")
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected a symlink refusal, got %v", err)
+	}
+}

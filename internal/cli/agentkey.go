@@ -10,8 +10,21 @@ import (
 	"github.com/wetransform/code-vm/internal/agentssh"
 	"github.com/wetransform/code-vm/internal/config"
 	"github.com/wetransform/code-vm/internal/lima"
+	"github.com/wetransform/code-vm/internal/profile"
 	"github.com/wetransform/code-vm/internal/session"
 )
+
+// prepareAgentAccess readies a freshly booted guest for sessions that start
+// over SSH rather than through `code-vm`: the git identity, which the default
+// command otherwise applies per invocation, and the agent's SSH key. Without
+// this, a VM booted with `code-vm start` and only ever used from Orca would
+// make unattributed commits.
+func prepareAgentAccess(ctx context.Context, cl lima.Client, c config.Config, profiles []profile.Profile, cfgPath string, out io.Writer) error {
+	if err := session.ApplyGitIdentity(ctx, agentDeps(cl, c, profiles)); err != nil {
+		return err
+	}
+	return ensureAgentKey(ctx, cl, c, cfgPath, out)
+}
 
 // agentKey returns the agent user's SSH identity for this config, generating it on first use.
 func agentKey(ctx context.Context, c config.Config, cfgPath string) (agentssh.Key, error) {

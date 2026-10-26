@@ -284,3 +284,47 @@ func TestStartWarnsWhenSSHKeygenIsMissing(t *testing.T) {
 		t.Errorf("expected a warning naming ssh-keygen:\n%s", out.String())
 	}
 }
+
+// withHostGitIdentity points git at a scratch global config so the test does
+// not depend on the developer's own identity.
+func withHostGitIdentity(t *testing.T, name, email string) {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(p, []byte("[user]\n\tname = "+name+"\n\temail = "+email+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", p)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+}
+
+// A VM booted with `start` and only ever used from Orca never runs the
+// default command, which is where the identity used to be applied.
+func TestStartAppliesTheHostGitIdentity(t *testing.T) {
+	root := NewRootCmd()
+	withScratchConfig(t)
+	withHostGitIdentity(t, "Ada Lovelace", "ada@example.com")
+	fakeAgentKeygen(t)
+	r := installFakeClient(t, "Stopped")
+	root.SetArgs([]string{"start"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !ranAny(r.calls, ".gitconfig 0644") {
+		t.Errorf("start did not push the git identity, calls=%q", r.calls)
+	}
+}
+
+func TestRecreateAppliesTheHostGitIdentity(t *testing.T) {
+	root := NewRootCmd()
+	withScratchConfig(t)
+	withHostGitIdentity(t, "Ada Lovelace", "ada@example.com")
+	fakeAgentKeygen(t)
+	r := installFakeClient(t, "Stopped")
+	root.SetArgs([]string{"recreate", "--yes"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !ranAny(r.calls, ".gitconfig 0644") {
+		t.Errorf("recreate did not push the git identity, calls=%q", r.calls)
+	}
+}
