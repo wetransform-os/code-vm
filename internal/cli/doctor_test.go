@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -161,6 +164,23 @@ func TestVirtiofsdPathsCoverDebianAndFedoraLayouts(t *testing.T) {
 	for p, ok := range want {
 		if !ok {
 			t.Errorf("virtiofsdPaths must include %s", p)
+		}
+	}
+}
+
+func TestPrintChecksWarnDoesNotFail(t *testing.T) {
+	var out bytes.Buffer
+	failed := printChecks(&out, []check{
+		{name: "fine", err: nil},
+		{name: "soft", err: errors.New("degraded"), warn: true},
+		{name: "hard", err: errors.New("broken")},
+	})
+	if failed != 1 {
+		t.Errorf("failed = %d, want 1 (warnings never count)", failed)
+	}
+	for _, want := range []string{"  OK   fine", "  WARN soft: degraded", "  FAIL hard: broken"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}
 	}
 }

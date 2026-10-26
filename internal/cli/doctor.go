@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"regexp"
@@ -70,9 +71,30 @@ func atLeastLimaVersion(got string) error {
 	return atLeastVersion(got, minLima)
 }
 
+// check is one doctor line. A warn check reports a degraded but working setup,
+// so it is shown but never fails doctor.
 type check struct {
 	name string
 	err  error
+	warn bool
+}
+
+// printChecks writes one line per check and returns how many hard checks
+// failed; warnings are printed but never counted, so they cannot change
+// doctor's exit status.
+func printChecks(out io.Writer, checks []check) (failed int) {
+	for _, c := range checks {
+		switch {
+		case c.err == nil:
+			fmt.Fprintf(out, "  OK   %s\n", c.name)
+		case c.warn:
+			fmt.Fprintf(out, "  WARN %s: %v\n", c.name, c.err)
+		default:
+			failed++
+			fmt.Fprintf(out, "  FAIL %s: %v\n", c.name, c.err)
+		}
+	}
+	return failed
 }
 
 func newDoctorCmd() *cobra.Command {
@@ -82,20 +104,17 @@ func newDoctorCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			checks := []check{
-				{"limactl on PATH", checkBinary("limactl")},
-				{"Lima version", checkLimaVersion(ctx)},
+				{name: "limactl on PATH", err: checkBinary("limactl")},
+				{name: "Lima version", err: checkLimaVersion(ctx)},
 			}
 			checks = append(checks, hypervisorChecks(runtime.GOOS)...)
-			checks = append(checks, check{"config valid", checkConfig()})
-			failed := 0
-			for _, c := range checks {
-				if c.err == nil {
-					fmt.Fprintf(cmd.OutOrStdout(), "  OK   %s\n", c.name)
-					continue
-				}
-				failed++
-				fmt.Fprintf(cmd.OutOrStdout(), "  FAIL %s: %v\n", c.name, c.err)
+			if runtime.GOOS == "linux" {
+				// A warning, not a failure: the VM still boots without a scope, it
+				// just is not protected from its terminal dying.
+				checks = append(checks, check{name: "VM boot detaches into its own systemd scope", err: checkDetachedBoot(ctx), warn: true})
 			}
+			checks = append(checks, check{name: "config valid", err: checkConfig()})
+			failed := printChecks(cmd.OutOrStdout(), checks)
 			if failed > 0 {
 				return fmt.Errorf("%d prerequisite check(s) failed", failed)
 			}
@@ -103,6 +122,14 @@ func newDoctorCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// checkDetachedBoot reports whether VM boots can leave the caller's cgroup.
+func checkDetachedBoot(ctx context.Context) error {
+	if len(lima.DetachPrefix(ctx, "linux", exec.LookPath, lima.ProbeUserManager, "doctor")) > 0 {
+		return nil
+	}
+	return errors.New("systemd-run --user is unavailable, so a VM booted from a terminal that kills by control group (an Orca workspace delete, some terminal tabs) dies with it; boot with `code-vm start` from a plain shell")
 }
 
 func checkBinary(name string) error {
@@ -161,18 +188,18 @@ func hypervisorChecks(goos string) []check {
 	switch goos {
 	case "darwin":
 		return []check{
-			{"macOS supports Virtualization.framework", checkMacOSVersion()},
-			{"hardware virtualisation (HVF) available", checkHVF()},
+			{name: "macOS supports Virtualization.framework", err: checkMacOSVersion()},
+			{name: "hardware virtualisation (HVF) available", err: checkHVF()},
 		}
 
 	case "linux":
 		return []check{
-			{"virtiofsd installed", checkVirtiofsd()},
-			{"KVM accessible", checkKVM()},
+			{name: "virtiofsd installed", err: checkVirtiofsd()},
+			{name: "KVM accessible", err: checkKVM()},
 		}
 	default:
 		return []check{
-			{"supported host OS", fmt.Errorf("unsupported host OS %q: code-vm runs on Linux (KVM) and macOS (HVF)", goos)},
+			{name: "supported host OS", err: fmt.Errorf("unsupported host OS %q: code-vm runs on Linux (KVM) and macOS (HVF)", goos)},
 		}
 	}
 }
