@@ -119,3 +119,19 @@ func TestRootPassesArgsAfterDoubleDashToTheGuest(t *testing.T) {
 		t.Errorf("guest command not forwarded, calls=%v", r.calls)
 	}
 }
+
+// The agent's SSH key lives under <config dir>/ssh; a shared mount over it
+// (or over a parent) would hand the agent the private key that grants entry
+// as devuser from outside the sandbox.
+func TestLoadConfigRefusesMountOverSSHDir(t *testing.T) {
+	dir := withScratchConfig(t)
+	appendConfig(t, "extraMounts:\n  - "+filepath.Join(dir, "ssh")+"\n")
+
+	_, _, err := loadConfig()
+	if err == nil {
+		t.Fatal("expected loadConfig to refuse a mount over the SSH key directory")
+	}
+	if !strings.Contains(err.Error(), "agent SSH key") {
+		t.Errorf("loadConfig error = %v, want an agent SSH key refusal", err)
+	}
+}

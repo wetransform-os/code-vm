@@ -63,7 +63,10 @@ func newMountCmd() *cobra.Command {
 			if err := updated.MountsExclude(path); err != nil {
 				return err
 			}
-			if err := updated.MountsExcludeTree(config.ProfilesDirFor(path)); err != nil {
+			if err := updated.MountsExcludeTree(config.ProfilesDirFor(path), "the code-vm profiles"); err != nil {
+				return err
+			}
+			if err := updated.MountsExcludeTree(config.SSHDirFor(path), "the agent SSH key"); err != nil {
 				return err
 			}
 			if err := updated.Save(path); err != nil {
