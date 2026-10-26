@@ -61,6 +61,7 @@ cpus: 2
 memory: 6GiB
 disk: 40GiB
 containerProxy: false
+sshPort: 60122
 YAML
 
 # Every invocation carries --config, so nothing can reach the real VM or config.
@@ -627,6 +628,81 @@ if [ -n "$HOST_GIT_EMAIL" ]; then
 fi
 
 echo ""
+echo "── Agent SSH access ──────────────────────────────────────────────"
+
+AGENT_KEY="$TEST_CONFIG_DIR/ssh/$INSTANCE/agent_ed25519"
+SSH_TARGET_OUT=$("${CODE_VM_ARGS[@]}" ssh-target 2>&1)
+if echo "$SSH_TARGET_OUT" | grep -q "Port:          60122" && echo "$SSH_TARGET_OUT" | grep -q "User:          $AGENT_USER"; then
+    pass "ssh-target prints the pinned port and the agent user"
+else
+    fail "ssh-target prints the pinned port and the agent user (got: $SSH_TARGET_OUT)"
+fi
+if [ "$(stat -c '%a' "$AGENT_KEY" 2> /dev/null || stat -f '%Lp' "$AGENT_KEY")" = "600" ]; then
+    pass "the agent private key is 0600 on the host"
+else
+    fail "the agent private key is 0600 on the host"
+fi
+
+# Trust is left to the client here: the suite's VM is throwaway, so its host
+# key is irrelevant, and known_hosts must not accumulate per run.
+agent_ssh() {
+    ssh -i "$AGENT_KEY" -p 60122 -o IdentitiesOnly=yes -o BatchMode=yes \
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+        "$AGENT_USER@127.0.0.1" "$@"
+}
+if [ "$(agent_ssh id -un)" = "$AGENT_USER" ]; then
+    pass "ssh as the agent user with the host-issued key works"
+else
+    fail "ssh as the agent user with the host-issued key works"
+fi
+# ControlPath=none: Lima's config multiplexes over the admin's master, which
+# would otherwise answer as limaadmin no matter which user is asked for.
+assert_fails "ssh as the agent user with Lima's admin key is refused" \
+    ssh -F "$(limactl list "$INSTANCE" --format '{{.SSHConfigFile}}')" -o ControlPath=none -o BatchMode=yes \
+    -o User="$AGENT_USER" "lima-$INSTANCE" true
+
+if [ "$(adm stat -c '%U %a' "/home/$AGENT_USER/.ssh/authorized_keys")" = "$AGENT_USER 600" ] && [ "$(adm cat "/home/$AGENT_USER/.ssh/authorized_keys" | wc -l)" = "1" ]; then
+    pass "authorized_keys is agent-owned, 0600, one line"
+else
+    fail "authorized_keys is agent-owned, 0600, one line"
+fi
+# sshd's StrictModes rejects a .ssh with a group or other write bit (2, 3, 6, 7).
+if adm stat -c '%a' "/home/$AGENT_USER/.ssh" | grep -Eq '^7[2367].$|^7.[2367]$'; then
+    fail ".ssh is not group- or world-writable"
+else
+    pass ".ssh is not group- or world-writable"
+fi
+
+# An agent-planted extra key must not survive ssh-target.
+agent bash -c "echo 'ssh-rsa AAAAPLANTED planted' >> ~/.ssh/authorized_keys"
+"${CODE_VM_ARGS[@]}" ssh-target > /dev/null 2>&1
+if [ "$(adm cat "/home/$AGENT_USER/.ssh/authorized_keys" | wc -l)" = "1" ]; then
+    pass "ssh-target restores the single host-issued key over a planted one"
+else
+    fail "ssh-target restores the single host-issued key over a planted one"
+fi
+
+if agent_ssh cat /proc/self/cgroup | grep -q "/user.slice/user-$(id -u).slice/"; then
+    pass "an SSH login runs inside the agent's resource slice"
+else
+    fail "an SSH login runs inside the agent's resource slice"
+fi
+
+LOCK_BEFORE=$(adm sha256sum "/home/$AGENT_USER/.claude/settings.json" "/home/$AGENT_USER/.claude/settings.local.json")
+agent_ssh claude --version > /dev/null 2>&1 || true
+LOCK_AFTER=$(adm sha256sum "/home/$AGENT_USER/.claude/settings.json" "/home/$AGENT_USER/.claude/settings.local.json")
+if [ "$LOCK_BEFORE" = "$LOCK_AFTER" ]; then
+    pass "an SSH login and claude launch leave the locked settings untouched"
+else
+    fail "an SSH login and claude launch leave the locked settings untouched"
+fi
+if agent_ssh env | grep -q '^CLAUDE_CONFIG_DIR='; then
+    fail "no Claude config-directory override reaches an SSH login"
+else
+    pass "no Claude config-directory override reaches an SSH login"
+fi
+
+echo ""
 echo "── Profiles ──────────────────────────────────────────────────────"
 # Exercises the `profile apply` path end to end: files, packages, shell,
 # domains and a hook. The boot path shares the same guest applier and inputs.
@@ -811,7 +887,7 @@ rm -rf "$UNTRUSTED_DIR"
 echo ""
 echo "── Resource limits ───────────────────────────────────────────────"
 
-if adm systemctl show "user-$(id -u).slice" -p TasksMax | grep -q "TasksMax=2048"; then
+if adm systemctl show "user-$(id -u).slice" -p TasksMax | grep -q "TasksMax=8192"; then
     pass "TasksMax is applied to the agent slice"
 else
     fail "TasksMax is applied to the agent slice"
@@ -1048,7 +1124,25 @@ yq -i '.swap = "0B"' "$CONFIG_FILE"
 
 "${CODE_VM_ARGS[@]}" firewall audit > /dev/null
 "${CODE_VM_ARGS[@]}" stop > /dev/null 2>&1
-"${CODE_VM_ARGS[@]}" start > /dev/null 2>&1
+# The boot that follows doubles as the regression test for the Orca
+# incident: Lima's host agent used to inherit the booting process's cgroup,
+# so stopping that scope (an Orca workspace delete) killed the VM. Boot
+# from inside a throwaway scope, stop the scope, and the VM must survive.
+if [ "$(uname)" = Linux ] && [[ "$(systemctl --user is-system-running 2> /dev/null)" =~ ^(running|degraded)$ ]]; then
+    BOOT_SCOPE="code-vm-suite-$$"
+    systemd-run --user --scope --quiet --collect --unit="$BOOT_SCOPE" -- "${CODE_VM_ARGS[@]}" start > /dev/null 2>&1
+    systemctl --user stop "$BOOT_SCOPE.scope" 2> /dev/null || true
+    sleep 2
+    if [ "$(limactl list "$INSTANCE" --format '{{.Status}}')" = "Running" ]; then
+        pass "the VM survives its booting scope being stopped"
+    else
+        fail "the VM survives its booting scope being stopped"
+        "${CODE_VM_ARGS[@]}" start > /dev/null 2>&1
+    fi
+else
+    echo "  SKIP: the scope-survival check needs a Linux systemd user manager"
+    "${CODE_VM_ARGS[@]}" start > /dev/null 2>&1
+fi
 
 SWAP_STATE=$(swap_state)
 if [ "$SWAP_STATE" = "absent inactive nofstab" ]; then
@@ -1074,6 +1168,8 @@ assert_fails "a domain absent from the host config is blocked after restart" \
 
 assert_ok "settings stay locked after restart" \
     bash -c "[ \"\$(limactl shell $INSTANCE sudo stat -c '%U:%g %a' /home/$AGENT_USER/.claude/settings.json)\" = 'root:$(id -g) 444' ]"
+
+assert_ok "the pinned SSH port is stable across a restart" agent_ssh true
 
 # Host-config domains must survive a restart — that is the difference from the
 # tmpfs-only mechanism this replaced. init-firewall.sh writes the fragment at
