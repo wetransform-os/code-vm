@@ -23,12 +23,31 @@ run = "bash test-vm-sandbox.sh"
 description = "Lint Go and shell sources"
 run = [
   "golangci-lint run",
-  "shellcheck internal/guest/files/scripts/*.sh internal/guest/files/scripts/sandbox-exec test-vm-sandbox.sh",
+  "shellcheck internal/guest/files/scripts/*.sh internal/guest/files/scripts/sandbox-exec scripts/*.sh test-vm-sandbox.sh",
 ]
 
 [tasks."fmt-check"]
 description = "Verify formatting"
 run = [
   "test -z \"$(gofmt -l .)\"",
-  "shfmt -d internal/guest/files/scripts",
+  "shfmt -d internal/guest/files/scripts scripts",
 ]
+
+[tasks."release:build"]
+description = "Build the release archives and checksums into dist/release"
+usage = 'flag "--version <version>" help="Release version, without leading v" required=#true'
+run = 'bash scripts/release-build.sh "${usage_version}"'
+
+# Conventions of the shared mise-release workflow (wetransform/gha-workflows).
+[tasks."ci:verify-release"]
+description = "Checks that must pass before a release is cut"
+depends = ["fmt-check", "lint", "test:unit"]
+# A dry run skips ci:set-version, so build every release target here: otherwise a
+# target-specific build break only shows during the real release. The real run
+# replaces these throwaway archives.
+run = "bash scripts/release-build.sh 0.0.0-verify"
+
+[tasks."ci:set-version"]
+description = "Build the release assets for the given version (called by the release workflow)"
+usage = 'flag "--version <version>" help="Release version, without leading v" required=#true'
+run = 'bash scripts/release-build.sh "${usage_version}"'

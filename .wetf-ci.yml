@@ -1,0 +1,7 @@
+---
+# Configuration for the shared wetransform CI workflows
+release:
+  # Produced by `mise run ci:set-version` and attached to the GitHub release.
+  assets:
+    - path: dist/release/*.tar.gz
+    - path: dist/release/checksums.txt
