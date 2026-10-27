@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -182,5 +183,20 @@ func TestPrintChecksWarnDoesNotFail(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}
+	}
+}
+
+func TestCheckLingerReadsLoginctl(t *testing.T) {
+	ctx := context.Background()
+	if err := checkLinger(ctx, func(context.Context) (string, error) { return "yes\n", nil }); err != nil {
+		t.Errorf("linger yes must pass, got %v", err)
+	}
+	err := checkLinger(ctx, func(context.Context) (string, error) { return "no\n", nil })
+	if err == nil || !strings.Contains(err.Error(), "loginctl enable-linger") {
+		t.Errorf("linger no must warn with the enable hint, got %v", err)
+	}
+	err = checkLinger(ctx, func(context.Context) (string, error) { return "", errors.New("exec: loginctl not found") })
+	if err == nil || !strings.Contains(err.Error(), "loginctl enable-linger") {
+		t.Errorf("an unqueryable loginctl must still warn with the hint, got %v", err)
 	}
 }
