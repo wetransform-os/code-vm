@@ -21,6 +21,7 @@ func NewRootCmd() *cobra.Command {
 		Long: "code-vm runs Claude Code inside a hardened Lima VM with rootless Docker,\n" +
 			"an egress allowlist and a non-root agent user. Run it from a project\n" +
 			"directory: that directory becomes the working directory in the guest.",
+		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          rejectUnknownCommand,
