@@ -268,6 +268,21 @@ systemctl start --no-block sandbox-boot.service
 # sysinit onwards (see the unit). Starting it now too covers the rest of
 # this boot, where the agent's lingering user manager is already up and the
 # firewall is not yet built; init-firewall.sh replaces its rule later.
+# A failed guard must fail closed: the agent's lingering user manager (and
+# every unit the agent enabled under it) does not start without it, and
+# agent-login-gate.sh refuses the agent's SSH logins while it is not active.
+# Other accounts are untouched, so limaadmin can still get in to diagnose.
+install -d "/etc/systemd/system/user@${AGENT_UID}.service.d"
+cat > "/etc/systemd/system/user@${AGENT_UID}.service.d/50-sandbox-egress.conf" << EOF
+[Unit]
+Requires=sandbox-egress-early.service
+After=sandbox-egress-early.service
+EOF
+LOGIN_GATE='account    required     pam_exec.so quiet /usr/local/lib/sandbox/agent-login-gate.sh'
+if ! grep -qF 'agent-login-gate.sh' /etc/pam.d/sshd; then
+    sed -i "/pam_nologin.so/a $LOGIN_GATE" /etc/pam.d/sshd
+fi
+grep -qF 'agent-login-gate.sh' /etc/pam.d/sshd
 systemctl daemon-reload
 systemctl enable sandbox-egress-early.service > /dev/null 2>&1 || true
 systemctl start sandbox-egress-early.service

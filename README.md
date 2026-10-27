@@ -451,9 +451,11 @@ root: `devuser` has no sudo and the rootful Docker daemon is masked, so the
 agent's own rootless `dockerd` cannot be used to become guest root.
 
 The agent never has unfiltered egress, not even while the guest boots: an
-early systemd unit rejects all non-loopback traffic for the agent UID before
-the network, sshd and the agent's user manager come up, and the full firewall
-replaces that rule once the boot sequence builds it.
+early systemd unit rejects all traffic for the agent UID before the network,
+sshd and the agent's user manager come up, and the full firewall replaces
+that rule once the boot sequence builds it. The guard fails closed: the
+agent's user manager requires it, and sshd refuses the agent's login while it
+is not active.
 
 ### Known limitations
 

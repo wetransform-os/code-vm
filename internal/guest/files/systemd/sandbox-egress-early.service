@@ -4,9 +4,14 @@ Description=code-vm fail-closed agent egress until the firewall is built
 # agent user lingers, so its systemd user manager (and every unit it enabled)
 # starts at boot long before that, and sshd answers the host's port forward
 # just as early. Without this unit, agent-controlled code had unfiltered
-# egress for the seconds between the two. This rejects everything but
-# loopback for the agent UID until init-firewall.sh flushes OUTPUT and builds
-# the real rules; if the boot sequence never gets there, the rejection stays.
+# egress for the seconds between the two. This rejects everything for the
+# agent UID until init-firewall.sh flushes OUTPUT and builds the real rules;
+# if the boot sequence never gets there, the rejection stays.
+#
+# Before= only orders; it does not stop the listed units when this one
+# fails. Provisioning therefore also makes the agent's user manager Require=
+# this unit, and agent-login-gate.sh (PAM, sshd) refuses the agent while it
+# is not active, so a failed guard fails closed rather than open.
 DefaultDependencies=no
 ConditionPathExists=/etc/sandbox/provision.env
 After=local-fs.target
