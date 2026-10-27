@@ -1205,15 +1205,50 @@ if [[ "$EARLY_AT" =~ ^[0-9]+$ ]] && [ "$EARLY_AT" -gt 0 ] && [ "$EARLY_AT" -lt "
 else
     fail "the early egress unit ran before sshd and the agent's user manager (early=$EARLY_AT sshd=$SSHD_AT agent-manager=$AGENT_MGR_AT)"
 fi
-if adm journalctl -b -u sandbox-egress-early.service --no-pager 2> /dev/null | grep -q 'has no network beyond loopback'; then
+if adm journalctl -b -u sandbox-egress-early.service --no-pager 2> /dev/null | grep -q 'has no network until the firewall is built'; then
     pass "the early egress unit installed its rule on this boot"
 else
     fail "the early egress unit installed its rule on this boot"
 fi
-if adm iptables -S OUTPUT | grep -q -- "! -o lo -m owner --uid-owner $(id -u) -j REJECT"; then
+STOPGAP_RULE="-A OUTPUT -m owner --uid-owner $(id -u) -j REJECT --reject-with icmp-port-unreachable"
+if adm iptables -S OUTPUT | grep -qxF -- "$STOPGAP_RULE"; then
     fail "init-firewall.sh replaced the early stopgap rule with the full ruleset"
 else
     pass "init-firewall.sh replaced the early stopgap rule with the full ruleset"
+fi
+
+# A failed guard must fail closed. Inject the failure without a reboot: with
+# its script out of the way the unit fails to start, which must refuse the
+# agent's SSH login (PAM gate) while the admin still gets in; the agent's
+# user manager must declare the same dependency for the linger path. Restoring
+# the script and the unit re-inserts the stopgap rule, which the mode switch
+# at the end rebuilds away again.
+if adm systemctl show -p Requires --value "user@$(id -u).service" | grep -q 'sandbox-egress-early.service'; then
+    pass "the agent's user manager requires the early egress guard"
+else
+    fail "the agent's user manager requires the early egress guard"
+fi
+adm systemctl stop sandbox-egress-early.service
+adm mv /usr/local/lib/sandbox/early-egress.sh /usr/local/lib/sandbox/early-egress.sh.aside
+assert_fails "the early egress unit fails when its rule cannot be installed" \
+    adm systemctl start sandbox-egress-early.service
+assert_fails "the agent cannot log in over SSH while the guard is not active" agent_ssh true
+assert_ok "the admin can still log in while the guard is not active" \
+    ssh -F "$(limactl list "$INSTANCE" --format '{{.SSHConfigFile}}')" -o ControlPath=none -o BatchMode=yes \
+    "lima-$INSTANCE" true
+adm mv /usr/local/lib/sandbox/early-egress.sh.aside /usr/local/lib/sandbox/early-egress.sh
+adm systemctl reset-failed sandbox-egress-early.service
+assert_ok "the early egress unit starts again once its rule can be installed" \
+    adm systemctl start sandbox-egress-early.service
+assert_ok "the agent can log in over SSH once the guard is active again" agent_ssh true
+# Requires= also propagates the stop above to the agent's user manager; bring
+# it back so the rest of the run sees the lingering manager a boot provides.
+adm systemctl start "user@$(id -u).service"
+"${CODE_VM_ARGS[@]}" firewall allowlist > /dev/null
+if adm iptables -S OUTPUT | grep -qxF -- "$STOPGAP_RULE"; then
+    fail "rebuilding the firewall removes the re-inserted stopgap rule"
+else
+    pass "rebuilding the firewall removes the re-inserted stopgap rule"
 fi
 
 # Host-config domains must survive a restart — that is the difference from the

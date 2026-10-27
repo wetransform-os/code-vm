@@ -196,12 +196,17 @@ echo "[firewall] Squid ready on :3128"
 GUEST_IP=$(ip -4 -o addr show dev eth0 | awk '{print $4}' | cut -d/ -f1)
 GATEWAY=$(ip route show default | awk '{print $3; exit}')
 
+# Policies first, then the flush: with the default ACCEPT policy still in
+# place, an empty OUTPUT chain between the flush and the first rule would be
+# a moment of unrestricted egress for any process already running — the
+# early-boot stopgap rule for the agent is among what the flush removes.
+# Under DROP the gap drops packets instead; established flows retransmit.
+iptables -P OUTPUT DROP
+iptables -P FORWARD DROP
 iptables -F OUTPUT
 iptables -F INPUT
 iptables -F FORWARD
 iptables -P INPUT ACCEPT
-iptables -P OUTPUT DROP
-iptables -P FORWARD DROP
 
 iptables -A OUTPUT -o lo -j ACCEPT
 iptables -A INPUT -i lo -j ACCEPT
