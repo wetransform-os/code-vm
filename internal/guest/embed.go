@@ -53,6 +53,9 @@ func guestPath(p string) (string, string) {
 	if rel, ok := trimPrefix(p, "files/config/"); ok {
 		return ConfigRoot + "/" + rel, "0444"
 	}
+	if rel, ok := trimPrefix(p, "files/cloud-init/"); ok {
+		return "/etc/cloud/cloud.cfg.d/" + rel, "0644"
+	}
 	return "", ""
 }
 

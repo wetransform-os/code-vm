@@ -1159,6 +1159,9 @@ swap_state() {
 cp "$CONFIG_FILE" "$CONFIG_FILE.restart-backup"
 yq -i '.swap = "0B"' "$CONFIG_FILE"
 
+# Lima gives cloud-init a new instance-id per boot; without the code-vm
+# drop-in cloud-init would regenerate the host keys on every start.
+HOST_KEY_BEFORE=$(adm cat /etc/ssh/ssh_host_ed25519_key.pub)
 "${CODE_VM_ARGS[@]}" firewall audit > /dev/null
 "${CODE_VM_ARGS[@]}" stop > /dev/null 2>&1
 # The boot that follows doubles as the regression test for the Orca
@@ -1208,6 +1211,12 @@ assert_ok "settings stay locked after restart" \
     bash -c "[ \"\$(limactl shell $INSTANCE sudo stat -c '%U:%g %a' /home/$AGENT_USER/.claude/settings.json)\" = 'root:$(id -g) 444' ]"
 
 assert_ok "the pinned SSH port is stable across a restart" agent_ssh true
+
+if [ -n "$HOST_KEY_BEFORE" ] && [ "$(adm cat /etc/ssh/ssh_host_ed25519_key.pub)" = "$HOST_KEY_BEFORE" ]; then
+    pass "the guest SSH host key is stable across a restart"
+else
+    fail "the guest SSH host key is stable across a restart"
+fi
 
 # Fail-closed boot window: the agent's lingering user manager and sshd come
 # up seconds before sandbox-boot.service builds the firewall. The early unit
