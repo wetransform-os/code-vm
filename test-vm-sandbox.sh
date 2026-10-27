@@ -299,7 +299,7 @@ echo ""
 echo "── Firewall ──────────────────────────────────────────────────────"
 
 VERIFY=$(adm cat /run/firewall-verify)
-for kv in "VERIFY=ok" "OUTPUT_POLICY=DROP" "UDP_DROP=yes" "PROXY_UID_RULE=yes" \
+for kv in "VERIFY=ok" "OUTPUT_POLICY=DROP" "IPV6_OUTPUT_POLICY=DROP" "UDP_DROP=yes" "PROXY_UID_RULE=yes" \
     "AGENT_GATEWAY_REJECT=yes" "SQUID_RUNNING=yes"; do
     if echo "$VERIFY" | grep -qx "$kv"; then
         pass "firewall self-verify: $kv"
@@ -1099,6 +1099,23 @@ assert_fails "open mode still blocks DNS tunneling" \
 assert_fails "open mode still blocks the host gateway" \
     agent bash -c 'timeout 5 bash -c "echo > /dev/tcp/$(ip route show default | awk "{print \$3; exit}")/22"'
 
+# The host is reachable over IPv6 too: the user-mode network advertises a
+# site-local prefix whose ::2 is the host (fec0::2 under QEMU). The agent
+# used to connect to host services bound on [::] through it while the IPv4
+# gateway REJECT held. Root reaching it first proves the path exists, so the
+# agent's failure means the rules, not a missing route.
+# shellcheck disable=SC2016 # awk program, expanded inside the guest
+GUEST_V6_PREFIX=$(adm sh -c 'ip -6 route show dev eth0 proto ra | awk "/\/64/ {print \$1; exit}"')
+GUEST_V6_HOST=${GUEST_V6_PREFIX:+${GUEST_V6_PREFIX%::/64}::2}
+if [ -n "$GUEST_V6_HOST" ] && adm ping -6 -c1 -W2 "$GUEST_V6_HOST" > /dev/null 2>&1; then
+    assert_fails "the agent cannot reach the host over IPv6 ($GUEST_V6_HOST)" \
+        agent timeout 5 ping -6 -c1 -W2 "$GUEST_V6_HOST"
+    assert_fails "the agent cannot open a TCP connection to the host over IPv6" \
+        agent bash -c "timeout 5 bash -c 'echo > /dev/tcp/$GUEST_V6_HOST/22'"
+else
+    echo "  SKIP: no IPv6 host address reachable from the guest (got: ${GUEST_V6_HOST:-none})"
+fi
+
 assert_fails "the agent cannot change the firewall mode" \
     agent /usr/local/lib/sandbox/set-firewall-mode.sh allowlist
 assert_fails "the agent cannot write the mode file" \
@@ -1205,7 +1222,7 @@ if [[ "$EARLY_AT" =~ ^[0-9]+$ ]] && [ "$EARLY_AT" -gt 0 ] && [ "$EARLY_AT" -lt "
 else
     fail "the early egress unit ran before sshd and the agent's user manager (early=$EARLY_AT sshd=$SSHD_AT agent-manager=$AGENT_MGR_AT)"
 fi
-if adm journalctl -b -u sandbox-egress-early.service --no-pager 2> /dev/null | grep -q 'has no network until the firewall is built'; then
+if adm journalctl -b -u sandbox-egress-early.service --no-pager 2> /dev/null | grep -q 'no network until the firewall is built'; then
     pass "the early egress unit installed its rule on this boot"
 else
     fail "the early egress unit installed its rule on this boot"
@@ -1240,6 +1257,20 @@ adm mv /usr/local/lib/sandbox/early-egress.sh.aside /usr/local/lib/sandbox/early
 adm systemctl reset-failed sandbox-egress-early.service
 assert_ok "the early egress unit starts again once its rule can be installed" \
     adm systemctl start sandbox-egress-early.service
+# What the restarted guard installed: the primary UID in both families and
+# the agent's subordinate range, which a user namespace could otherwise use.
+# shellcheck disable=SC2016 # awk program, expanded inside the guest
+GUEST_SUBUID_RANGE=$(adm awk -F: -v u="$AGENT_USER" '$1 == u {printf "%s-%s", $2, $2 + $3 - 1; exit}' /etc/subuid)
+if adm ip6tables -S OUTPUT | grep -qxF -- "-A OUTPUT -m owner --uid-owner $(id -u) -j REJECT --reject-with icmp6-port-unreachable"; then
+    pass "the guard rejects the agent over IPv6 as well"
+else
+    fail "the guard rejects the agent over IPv6 as well"
+fi
+if [ -n "$GUEST_SUBUID_RANGE" ] && adm iptables -S OUTPUT | grep -qxF -- "-A OUTPUT -m owner --uid-owner $GUEST_SUBUID_RANGE -j REJECT --reject-with icmp-port-unreachable"; then
+    pass "the guard rejects the agent's subordinate UID range ($GUEST_SUBUID_RANGE)"
+else
+    fail "the guard rejects the agent's subordinate UID range (got range: ${GUEST_SUBUID_RANGE:-none})"
+fi
 assert_ok "the agent can log in over SSH once the guard is active again" agent_ssh true
 # Requires= also propagates the stop above to the agent's user manager; bring
 # it back so the rest of the run sees the lingering manager a boot provides.

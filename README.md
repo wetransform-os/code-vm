@@ -253,6 +253,10 @@ Things to know:
 - Deleting a workspace in Orca cannot take the VM down: code-vm boots the VM
   in its own systemd scope, so it no longer dies with the terminal or process
   that started it. `code-vm doctor` warns when the host cannot do this.
+- That scope lives in your systemd user manager, which stops with your last
+  session unless lingering is on. Run `loginctl enable-linger` once if the VM
+  should outlive a desktop logout or your last SSH connection; `code-vm
+  doctor` warns when it is off.
 
 ### `containerProxy`
 
@@ -455,7 +459,9 @@ early systemd unit rejects all traffic for the agent UID before the network,
 sshd and the agent's user manager come up, and the full firewall replaces
 that rule once the boot sequence builds it. The guard fails closed: the
 agent's user manager requires it, and sshd refuses the agent's login while it
-is not active.
+is not active. Both the guard and the firewall cover IPv6 and the agent's
+subordinate UID ranges, so neither a user namespace nor the user-mode
+network's IPv6 gateway is a way around them.
 
 ### Known limitations
 

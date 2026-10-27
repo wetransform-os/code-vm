@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -111,7 +112,13 @@ func newDoctorCmd() *cobra.Command {
 			if runtime.GOOS == "linux" {
 				// A warning, not a failure: the VM still boots without a scope, it
 				// just is not protected from its terminal dying.
-				checks = append(checks, check{name: "VM boot detaches into its own systemd scope", err: checkDetachedBoot(ctx), warn: true})
+				detached := checkDetachedBoot(ctx)
+				checks = append(checks, check{name: "VM boot detaches into its own systemd scope", err: detached, warn: true})
+				if detached == nil {
+					// Only relevant once boots do detach: the scope lives in the
+					// user manager, whose lifetime linger decides.
+					checks = append(checks, check{name: "VM outlives your last session (loginctl linger)", err: checkLinger(ctx, loginctlLinger), warn: true})
+				}
 			}
 			checks = append(checks, check{name: "config valid", err: checkConfig()})
 			failed := printChecks(cmd.OutOrStdout(), checks)
@@ -130,6 +137,30 @@ func checkDetachedBoot(ctx context.Context) error {
 		return nil
 	}
 	return errors.New("systemd-run --user is unavailable, so a VM booted from a terminal that kills by control group (an Orca workspace delete, some terminal tabs) dies with it; boot with `code-vm start` from a plain shell")
+}
+
+// checkLinger reports whether the user's systemd manager outlives their
+// sessions. The detached boot scope lives inside that manager, so without
+// linger the VM stops when the last session ends (a desktop logout, the last
+// SSH connection closing) — which a VM in a plain session scope used to
+// survive on hosts with KillUserProcesses=no.
+func checkLinger(ctx context.Context, linger func(context.Context) (string, error)) error {
+	out, err := linger(ctx)
+	if err != nil {
+		return fmt.Errorf("could not query loginctl (%v); if lingering is off, the VM stops when your last session ends — enable it once with `loginctl enable-linger`", err)
+	}
+	if strings.TrimSpace(out) == "yes" {
+		return nil
+	}
+	return errors.New("lingering is off, so the VM stops when your last session ends (desktop logout, last SSH connection closing); enable it once with `loginctl enable-linger`")
+}
+
+// loginctlLinger returns the Linger property of the invoking user.
+func loginctlLinger(ctx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "loginctl", "show-user", strconv.Itoa(os.Getuid()), "--property=Linger", "--value").Output()
+	return string(out), err
 }
 
 func checkBinary(name string) error {
