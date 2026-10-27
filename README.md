@@ -272,8 +272,12 @@ show the port while the VM runs.
 
 Things to know:
 
-- After `code-vm recreate` the guest has a new host key, and Orca refuses the
-  target until you re-trust or re-add it.
+- The guest's SSH host key survives restarts. After `code-vm recreate` the
+  guest has a new one, and Orca or `ssh` refuses the target until you re-trust
+  it: for the snippet, run `ssh-keygen -R '[127.0.0.1]:<port>' -f <the
+  UserKnownHostsFile from the snippet>` and connect again. Expect this once
+  more on the first start after upgrading to a code-vm that pins the host key:
+  that boot still runs before the setting reaches the guest.
 - Orca's remote worktrees default to `~/orca/workspaces` in the guest's home,
   which host tools cannot see. Point Orca's remote workspace directory inside
   the repository if that matters.

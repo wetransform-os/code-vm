@@ -118,3 +118,26 @@ func TestConfigFilesSelectsOnlyTheCanonicalConfigTree(t *testing.T) {
 		t.Errorf("settings.json missing from %v", files)
 	}
 }
+
+// Lima hands cloud-init a fresh instance-id on every boot, so with its
+// default ssh_deletekeys the guest's SSH host key would change on every
+// start and every ssh client (and Orca) would refuse the next connection.
+func TestCloudInitKeepsHostKeysAcrossBoots(t *testing.T) {
+	files, err := DataFiles()
+	if err != nil {
+		t.Fatalf("DataFiles: %v", err)
+	}
+	for _, f := range files {
+		if !strings.HasPrefix(f.Path, "/etc/cloud/cloud.cfg.d/") {
+			continue
+		}
+		if f.Permissions != "0644" {
+			t.Errorf("%s permissions = %s, want 0644", f.Path, f.Permissions)
+		}
+		if !strings.Contains(f.Content, "ssh_deletekeys: false") {
+			t.Errorf("%s does not set ssh_deletekeys: false", f.Path)
+		}
+		return
+	}
+	t.Error("no cloud-init drop-in under /etc/cloud/cloud.cfg.d/ is delivered to the guest")
+}
