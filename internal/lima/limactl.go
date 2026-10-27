@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"syscall"
 )
 
 // Runner executes limactl. It is an interface so command construction can be
@@ -50,25 +51,27 @@ func (e ExecRunner) Run(ctx context.Context, args ...string) error {
 	return nil
 }
 
-// RunDetached runs limactl like Run, wrapped in Detach's prefix when there is
-// one, so the VM survives its terminal being torn down.
+// RunDetached runs limactl like Run, in a session of its own and wrapped in
+// Detach's prefix when there is one, so the VM survives its terminal being
+// torn down. The prefix moves it out of the caller's cgroup; the new session
+// takes it out of the caller's session and controlling terminal, which is
+// what a terminal that kills by process group (Orca) goes after.
 func (e ExecRunner) RunDetached(ctx context.Context, args ...string) error {
-	var prefix []string
+	cmd, via := e.command(ctx, args...), ""
 	if e.Detach != nil {
-		prefix = e.Detach(ctx)
+		if prefix := e.Detach(ctx); len(prefix) > 0 {
+			bin := e.Bin
+			if bin == "" {
+				bin = "limactl"
+			}
+			name, full := detachedArgv(prefix, bin, args)
+			cmd, via = exec.CommandContext(ctx, name, full...), " (via systemd-run)"
+		}
 	}
-	if len(prefix) == 0 {
-		return e.Run(ctx, args...)
-	}
-	bin := e.Bin
-	if bin == "" {
-		bin = "limactl"
-	}
-	name, full := detachedArgv(prefix, bin, args)
-	cmd := exec.CommandContext(ctx, name, full...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = e.Stdin, e.Stdout, e.Stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("limactl %s (via systemd-run): %w", strings.Join(args, " "), err)
+		return fmt.Errorf("limactl %s%s: %w", strings.Join(args, " "), via, err)
 	}
 	return nil
 }

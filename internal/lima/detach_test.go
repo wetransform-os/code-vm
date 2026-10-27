@@ -1,9 +1,13 @@
 package lima
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -70,4 +74,54 @@ func TestDetachForNamesTheConfiguredInstance(t *testing.T) {
 	if desc != "--description=code-vm VM boot (code-sandbox-test)" {
 		t.Errorf("prefix %q must carry the configured instance", got)
 	}
+}
+
+// Orca ends a pane by SIGKILLing the process groups of everything that shares
+// the pane's session and controlling terminal, whatever cgroup it lives in. A
+// scope does not help against that, so the boot must also leave the session.
+func TestRunDetachedStartsItsOwnSession(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("reads the session id from /proc")
+	}
+	probe := `echo $$; cut -d' ' -f6 /proc/$$/stat`
+	cases := map[string]func(context.Context) []string{
+		"without a scope prefix": nil,
+		"with a scope prefix":    func(context.Context) []string { return []string{"env", "--"} },
+	}
+	for name, detach := range cases {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			r := ExecRunner{Bin: "sh", Stdout: &out, Detach: detach}
+			if err := r.RunDetached(context.Background(), "-c", probe); err != nil {
+				t.Fatal(err)
+			}
+			var pid, sid int
+			if _, err := fmt.Sscan(out.String(), &pid, &sid); err != nil {
+				t.Fatalf("parsing %q: %v", out.String(), err)
+			}
+			if own := ownSessionID(t); sid == own {
+				t.Errorf("boot stayed in the caller's session %d", own)
+			}
+			if sid != pid {
+				t.Errorf("boot is in session %d, want it to lead its own (pid %d)", sid, pid)
+			}
+		})
+	}
+}
+
+// ownSessionID reads the test process's session id: field 6 of
+// /proc/self/stat, counted after the parenthesised command name.
+func ownSessionID(t *testing.T) int {
+	t.Helper()
+	b, err := os.ReadFile("/proc/self/stat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rest := string(b[bytes.LastIndexByte(b, ')')+1:])
+	var state string
+	var ppid, pgrp, sid int
+	if _, err := fmt.Sscan(rest, &state, &ppid, &pgrp, &sid); err != nil {
+		t.Fatalf("parsing %q: %v", rest, err)
+	}
+	return sid
 }

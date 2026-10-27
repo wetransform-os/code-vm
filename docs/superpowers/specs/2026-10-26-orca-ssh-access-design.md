@@ -124,6 +124,12 @@ Behaviour:
   can run `code-vm start` from a plain shell. The builder may choose to
   distinguish "wrapper unavailable" (fall back) from "limactl failed" (report).
 - `code-vm doctor` reports whether detached boot is available.
+- The scope only answers a kill by control group. Orca's pane teardown also
+  sweeps by tty: it SIGKILLs the process group of every process that shares
+  the pane's session and controlling terminal, and Lima's host agent, QEMU and
+  virtiofsd inherit both from the pane. So the boot also starts in a new
+  session (`Setsid`), on every platform and with or without the scope. The
+  first implementation had the scope only and Orca still killed the VM.
 
 ## SSH access as devuser
 
