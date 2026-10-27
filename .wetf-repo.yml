@@ -1,0 +1,12 @@
+---
+# Repository configuration for wetransform managed repositories
+# (applied by wetransform/github-bootstrap)
+
+# Reference presets that should apply to this repository
+#
+# Only the release workflow is enabled: workflows-default would also add check
+# and publish workflows, but ci.yml already covers checks and there is nothing
+# to publish beyond the release assets.
+presets:
+  - mise
+  - workflows-release
