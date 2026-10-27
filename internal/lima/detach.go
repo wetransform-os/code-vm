@@ -10,6 +10,9 @@ import (
 // them and stay in the caller's cgroup. A terminal or Orca pane that systemd
 // stops by control group (KillMode=control-group) would then kill the VM with
 // it, so on Linux the boot runs inside its own transient scope instead.
+// A scope does not cover terminals that kill by session or process group
+// (Orca's pane teardown sweeps every process on the pane's tty); ExecRunner
+// also starts the boot in a session of its own for that.
 
 // DetachPrefix returns the argv prefix that runs a command in its own
 // transient user scope, or nil when the host cannot do that (not Linux, no
