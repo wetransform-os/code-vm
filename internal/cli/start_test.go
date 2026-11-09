@@ -371,3 +371,30 @@ func TestPrepareAgentAccessPushesTheIdentityBeforeTheTemplates(t *testing.T) {
 		t.Errorf("order must be identity (%d) < template (%d) < key (%d)", identity, template, key)
 	}
 }
+
+// The boot is where a host key rotation happens (recreate, or the one-time
+// rotation on the first boot that preserves keys), so start refreshes the
+// pin Orca uses right after installing the agent's key.
+func TestStartPinsTheGuestHostKey(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	appendConfig(t, "sshPort: 60122\n")
+	fakeAgentKeygen(t)
+	r := installFakeClient(t, "Stopped")
+	r.outputs = map[string]string{
+		"{{.SSHConfigFile}}": writeSSHConfig(t, "60122"),
+		"/etc/ssh/ssh_host_": "ssh-ed25519 AAAAHOST root@lima\n",
+	}
+	root.SetOut(&bytes.Buffer{})
+	root.SetArgs([]string{"start"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "ssh", "code-sandbox-clitest", "known_hosts"))
+	if err != nil {
+		t.Fatalf("start did not write known_hosts: %v", err)
+	}
+	if string(b) != "[127.0.0.1]:60122 ssh-ed25519 AAAAHOST\n" {
+		t.Errorf("known_hosts = %q", b)
+	}
+}

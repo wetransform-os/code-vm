@@ -129,6 +129,10 @@ func newSSHTargetCmd() *cobra.Command {
 				if err := session.PushAuthorizedKey(ctx, agentDeps(cl, c, nil), key.AuthorizedLine); err != nil {
 					return err
 				}
+				// Both ports: the snippet below names the configured one,
+				// but until the next boot the guest may still answer on the
+				// live one, and a client trying it must not be refused.
+				pinHostKey(ctx, cl, c, key, []int{port, live}, out)
 			}
 			fmt.Fprint(out, renderSSHTarget(sshTarget{
 				Instance:     c.Instance,
