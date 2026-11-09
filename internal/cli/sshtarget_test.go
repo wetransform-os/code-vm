@@ -104,7 +104,10 @@ func runSSHTarget(t *testing.T, sshCfg string) (string, *recordingRunner, error)
 	appendConfig(t, "sshPort: 60122\n")
 	fakeAgentKeygen(t)
 	r := installFakeClient(t, "Running")
-	r.outputs = map[string]string{"{{.SSHConfigFile}}": sshCfg}
+	r.outputs = map[string]string{
+		"{{.SSHConfigFile}}": sshCfg,
+		"/etc/ssh/ssh_host_": "ssh-ed25519 AAAAHOST root@lima\n",
+	}
 	var out bytes.Buffer
 	root.SetOut(&out)
 	root.SetArgs([]string{"ssh-target"})
@@ -222,5 +225,94 @@ func TestSSHTargetRefusesAnInvalidInstanceBeforeTouchingTheKeyDir(t *testing.T) 
 	}
 	if _, statErr := os.Stat(filepath.Join(filepath.Dir(dir), "escape")); !os.IsNotExist(statErr) {
 		t.Errorf("the traversal target must not exist: %v", statErr)
+	}
+}
+
+// The guest's host key changes on recreate and, once, on the first boot after
+// the upgrade that started preserving it. Every client pinning the old key
+// then disconnects before authenticating, and under OpenSSH's per-source
+// penalties one such client locks every host-side connection out. ssh-target
+// therefore rewrites the known_hosts it hands to Orca from the guest's
+// current keys, and says so when the pin changed.
+func TestSSHTargetPinsTheGuestHostKey(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	appendConfig(t, "sshPort: 60122\n")
+	fakeAgentKeygen(t)
+	r := installFakeClient(t, "Running")
+	r.outputs = map[string]string{
+		"{{.SSHConfigFile}}": writeSSHConfig(t, "60122"),
+		"/etc/ssh/ssh_host_": "ssh-ed25519 AAAAHOST root@lima-code-sandbox\n",
+	}
+	kh := filepath.Join(dir, "ssh", "code-sandbox-clitest", "known_hosts")
+	if err := os.MkdirAll(filepath.Dir(kh), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(kh, []byte("[127.0.0.1]:60122 ssh-ed25519 AAAASTALE\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetArgs([]string{"ssh-target"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(kh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "[127.0.0.1]:60122 ssh-ed25519 AAAAHOST\n" {
+		t.Errorf("known_hosts = %q", b)
+	}
+	if !strings.Contains(out.String(), "host key changed") {
+		t.Errorf("a replaced pin must be announced:\n%s", out.String())
+	}
+}
+
+func TestSSHTargetPinsBothThePinnedAndTheLivePort(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	appendConfig(t, "sshPort: 60122\n")
+	fakeAgentKeygen(t)
+	r := installFakeClient(t, "Running")
+	r.outputs = map[string]string{
+		"{{.SSHConfigFile}}": writeSSHConfig(t, "38421"),
+		"/etc/ssh/ssh_host_": "ssh-ed25519 AAAAHOST root@lima\n",
+	}
+	root.SetOut(&bytes.Buffer{})
+	root.SetArgs([]string{"ssh-target"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "ssh", "code-sandbox-clitest", "known_hosts"))
+	if !strings.Contains(string(b), "[127.0.0.1]:60122 ssh-ed25519 AAAAHOST\n") || !strings.Contains(string(b), "[127.0.0.1]:38421 ssh-ed25519 AAAAHOST\n") {
+		t.Errorf("known_hosts must cover the configured and the live port:\n%s", b)
+	}
+}
+
+// The trust file is a convenience for clients, so a guest that cannot answer
+// (no keys, unreadable) degrades to a warning rather than failing the command
+// that Orca setup depends on.
+func TestSSHTargetOnlyWarnsWhenTheHostKeyCannotBeRead(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	appendConfig(t, "sshPort: 60122\n")
+	fakeAgentKeygen(t)
+	r := installFakeClient(t, "Running")
+	r.outputs = map[string]string{
+		"{{.SSHConfigFile}}": writeSSHConfig(t, "60122"),
+		"/etc/ssh/ssh_host_": "",
+	}
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetArgs([]string{"ssh-target"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("an unreadable host key must not fail ssh-target: %v", err)
+	}
+	if !strings.Contains(out.String(), "warning: could not pin the guest's SSH host key") {
+		t.Errorf("expected a host key warning:\n%s", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ssh", "code-sandbox-clitest", "known_hosts")); err == nil {
+		t.Error("no known_hosts must be written when the guest returned no keys")
 	}
 }

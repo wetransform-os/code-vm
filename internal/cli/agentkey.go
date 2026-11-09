@@ -50,5 +50,44 @@ func ensureAgentKey(ctx context.Context, cl lima.Client, c config.Config, cfgPat
 	if err != nil {
 		return err
 	}
-	return session.PushAuthorizedKey(ctx, agentDeps(cl, c, nil), key.AuthorizedLine)
+	if err := session.PushAuthorizedKey(ctx, agentDeps(cl, c, nil), key.AuthorizedLine); err != nil {
+		return err
+	}
+	pinHostKey(ctx, cl, c, key, []int{c.SSHPort, liveSSHPort(ctx, cl)}, out)
+	return nil
+}
+
+// pinHostKey rewrites the known_hosts file code-vm hands to Orca and the
+// ssh_config snippet from the guest's current host keys, for 127.0.0.1 on
+// each of ports (zero and duplicates are ignored).
+//
+// The guest's host key changes on recreate, and changed once on the first
+// boot after the upgrade that started preserving it. A client that still
+// pins the old key fails verification and disconnects before authenticating;
+// under OpenSSH's per-source penalties enough of those from one address
+// (every host-side client shares the Lima gateway's) refuse all of them with
+// "Not allowed at this time". Keeping the pin current removes the trigger.
+//
+// The pin is a convenience for clients, not a control, so every failure here
+// is a warning: a boot or an ssh-target must not fail because the guest could
+// not answer a cat.
+func pinHostKey(ctx context.Context, cl lima.Client, c config.Config, key agentssh.Key, ports []int, out io.Writer) {
+	keys, err := session.HostKeys(ctx, agentDeps(cl, c, nil))
+	if err != nil {
+		fmt.Fprintf(out, "warning: could not pin the guest's SSH host key: %v\n", err)
+		return
+	}
+	content := agentssh.KnownHostsContent(ports, keys)
+	if content == "" {
+		// No port known: nothing a client could match against.
+		return
+	}
+	changed, err := agentssh.WriteKnownHosts(key.KnownHostsPath, content, keys)
+	if err != nil {
+		fmt.Fprintf(out, "warning: could not pin the guest's SSH host key: %v\n", err)
+		return
+	}
+	if changed {
+		fmt.Fprintf(out, "note: the guest's SSH host key changed; %s now trusts the new one\n", key.KnownHostsPath)
+	}
 }

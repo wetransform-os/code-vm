@@ -291,12 +291,17 @@ show the port while the VM runs.
 
 Things to know:
 
-- The guest's SSH host key survives restarts. After `code-vm recreate` the
-  guest has a new one, and Orca or `ssh` refuses the target until you re-trust
-  it: for the snippet, run `ssh-keygen -R '[127.0.0.1]:<port>' -f <the
-  UserKnownHostsFile from the snippet>` and connect again. Expect this once
-  more on the first start after upgrading to a code-vm that pins the host key:
-  that boot still runs before the setting reaches the guest.
+- The guest's SSH host key survives restarts, and `code-vm start` and
+  `code-vm ssh-target` keep the `UserKnownHostsFile` from the snippet in step
+  with it: after `code-vm recreate` (a new key) either command rewrites the
+  pin and says so. A client that still has the old key cached elsewhere, such
+  as Orca's own store, must be told to re-trust the target. Doing that
+  promptly matters: a client that keeps failing host key verification
+  disconnects before authenticating, and every host-side SSH client shares
+  one guest-side address, so sshd's per-source penalties would otherwise
+  refuse all of them, Lima's own boot probe included, for as long as the
+  retries continue. code-vm exempts that address from the penalties for this
+  reason; the guest's sshd keeps them for every other source.
 - Orca's remote worktrees default to `~/orca/workspaces` in the guest's home,
   which host tools cannot see. Point Orca's remote workspace directory inside
   the repository if that matters.

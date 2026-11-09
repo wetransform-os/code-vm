@@ -693,6 +693,51 @@ else
     fail "ssh-target restores the single host-issued key over a planted one"
 fi
 
+# ssh-target pins the guest's current host key in the known_hosts it hands
+# to Orca, so a client checking strictly against that file works, and a
+# stale pin (the guest's key changes on recreate) is replaced rather than
+# left to make the client disconnect before authenticating forever.
+KNOWN_HOSTS="$TEST_CONFIG_DIR/ssh/$INSTANCE/known_hosts"
+GUEST_HOST_KEY=$(adm cat /etc/ssh/ssh_host_ed25519_key.pub | awk '{print $1, $2}')
+if grep -qxF "[127.0.0.1]:60122 $GUEST_HOST_KEY" "$KNOWN_HOSTS" 2> /dev/null; then
+    pass "ssh-target pins the guest's host key for the configured port"
+else
+    fail "ssh-target pins the guest's host key for the configured port"
+fi
+assert_ok "ssh as the agent user verifies the guest strictly against the pinned key" \
+    ssh -i "$AGENT_KEY" -p 60122 -o IdentitiesOnly=yes -o BatchMode=yes \
+    -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o LogLevel=ERROR \
+    "$AGENT_USER@127.0.0.1" true
+echo "[127.0.0.1]:60122 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" > "$KNOWN_HOSTS"
+STALE_PIN_OUT=$("${CODE_VM_ARGS[@]}" ssh-target 2>&1)
+if echo "$STALE_PIN_OUT" | grep -q "host key changed" && grep -qxF "[127.0.0.1]:60122 $GUEST_HOST_KEY" "$KNOWN_HOSTS"; then
+    pass "ssh-target replaces a stale host key pin and says so"
+else
+    fail "ssh-target replaces a stale host key pin and says so (got: $STALE_PIN_OUT)"
+fi
+
+# All host-side clients share one guest-side source address, the Lima
+# gateway. Without the exemption, a client that keeps failing host key
+# verification (connect, disconnect before auth) gets that address penalised
+# and sshd refuses everyone from the host with "Not allowed at this time".
+# Reproduce the misbehaving client, then the well-behaved one must still get in.
+if adm sshd -T 2> /dev/null | grep -q "^persourcepenaltyexemptlist 192.168.5.2"; then
+    pass "the Lima gateway is exempt from sshd's per-source penalties"
+else
+    fail "the Lima gateway is exempt from sshd's per-source penalties"
+fi
+STALE_PIN_FILE=$(mktemp)
+echo "[127.0.0.1]:60122 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" > "$STALE_PIN_FILE"
+for _ in $(seq 1 30); do
+    ssh -i "$AGENT_KEY" -p 60122 -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=5 \
+        -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$STALE_PIN_FILE" -o LogLevel=QUIET \
+        "$AGENT_USER@127.0.0.1" true 2> /dev/null || true
+done
+rm -f "$STALE_PIN_FILE"
+assert_ok "a client with a stale host key pin cannot lock the host out of the guest's sshd" \
+    ssh -F "$(limactl list "$INSTANCE" --format '{{.SSHConfigFile}}')" -o ControlPath=none -o BatchMode=yes \
+    -o ConnectTimeout=10 "lima-$INSTANCE" true
+
 if agent_ssh cat /proc/self/cgroup | grep -q "/user.slice/user-$(id -u).slice/"; then
     pass "an SSH login runs inside the agent's resource slice"
 else
