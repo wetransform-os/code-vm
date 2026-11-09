@@ -1,0 +1,14 @@
+[Unit]
+Description=code-vm periodic trim of the guest inode cache
+
+[Timer]
+# Five minutes bounds how long the shared workspace can stay wedged if a
+# single sweep manages to exhaust virtiofsd's fds between two runs; the trim
+# itself is a no-op below the threshold, so the cadence costs nothing on a
+# quiet guest.
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
