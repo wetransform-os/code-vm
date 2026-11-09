@@ -162,6 +162,25 @@ the accelerated one for the host:
 | Linux | `qemu` | KVM | the `virtiofsd` package |
 | macOS 13.5+ | `vz` | Hypervisor.framework (HVF) | Virtualization.framework |
 
+### Large workspaces and the host's file descriptors
+
+virtiofsd on the host holds one file descriptor for every inode the guest has
+cached from a shared directory, and the guest keeps inodes cached for as long
+as it has memory to spare. A few weeks of tree walks over `node_modules` in a
+handful of worktrees exhausted the host's limit (1,048,576 fds), after which
+every open on the share failed with "No such file or directory" for files that
+plainly exist, until the VM was restarted. `code-vm` therefore raises the
+guest's `vm.vfs_cache_pressure` so reclaim takes inodes ahead of page cache,
+and runs `sandbox-inode-cache.timer` every five minutes, which drops the
+dentry and inode caches when more than 250,000 inodes are cached. Only the
+cache goes; open files, dirty data and page cache stay. A VM provisioned
+before this existed picks the timer up on its next boot (`code-vm stop`, then
+`code-vm start`, after upgrading); to free a wedged share without rebooting:
+
+```bash
+limactl shell code-sandbox -- sudo sh -c 'sync; echo 2 > /proc/sys/vm/drop_caches'
+```
+
 ### No workspace credentials
 
 Nothing agent- or workspace-authored is ever a credential source. The

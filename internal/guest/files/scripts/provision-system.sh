@@ -149,6 +149,33 @@ MemoryMax=${MEM_MAX_MB}M
 EOF
 systemctl daemon-reload
 
+# ── Shared-directory inode cache ─────────────────────────────────────────────
+# virtiofsd on the host keeps one file descriptor per inode the guest has
+# cached from a shared directory, and the guest keeps inodes cached while it
+# has memory to spare. Tree walks over big workspaces exhausted the host's
+# 1,048,576-fd limit after a week or two, and every open on the share then
+# failed with "No such file or directory" until the VM was restarted.
+# Two measures, both guest-side so they ship with the template and work the
+# same under QEMU and vz:
+#   - vfs_cache_pressure above its default of 100 makes memory reclaim take
+#     dentries and inodes ahead of page cache, so the natural churn of a busy
+#     guest releases host fds instead of hoarding them;
+#   - sandbox-inode-cache.timer is the hard bound: trim-inode-cache.sh drops
+#     the dentry/inode cache whenever the count passes its threshold.
+# Like swap, this is a mitigation, not a prerequisite: a failure here is
+# logged and provisioning continues, so a broken timer can never leave the
+# guest without /tmp, swap or Docker.
+cat > /etc/sysctl.d/50-sandbox-inode-cache.conf << EOF
+# Written by code-vm (provision-system.sh). Each cached inode on a shared
+# directory pins a virtiofsd fd on the host; reclaim them ahead of page cache.
+vm.vfs_cache_pressure = 200
+EOF
+sysctl -q -p /etc/sysctl.d/50-sandbox-inode-cache.conf ||
+    log "WARNING: could not apply vm.vfs_cache_pressure; the inode cache trim timer is the only bound"
+systemctl enable sandbox-inode-cache.timer > /dev/null 2>&1 || true
+systemctl start sandbox-inode-cache.timer ||
+    log "WARNING: could not start sandbox-inode-cache.timer; the guest inode cache is unbounded (see trim-inode-cache.sh)"
+
 # ── /tmp on disk ─────────────────────────────────────────────────────────────
 # The stock image mounts /tmp as a tmpfs sized at half of RAM (tmp.mount, a
 # static unit). Agent scratch written there — Claude Code's own scratchpad

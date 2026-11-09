@@ -913,6 +913,49 @@ else
     fail "TasksMax is applied to the agent slice"
 fi
 
+# Each inode the guest keeps cached from a shared directory pins a virtiofsd
+# fd on the host, and the guest hoards them while memory is plentiful; a
+# couple of weeks of tree walks exhausted the host's fd limit and the share
+# stopped opening files. Provisioning tilts reclaim towards inodes and runs
+# a trim timer as the hard bound.
+if [ "$(adm sysctl -n vm.vfs_cache_pressure)" = "200" ]; then
+    pass "vfs_cache_pressure favours reclaiming inodes over page cache"
+else
+    fail "vfs_cache_pressure favours reclaiming inodes over page cache"
+fi
+
+if adm systemctl is-active --quiet sandbox-inode-cache.timer; then
+    pass "the inode cache trim timer is active"
+else
+    fail "the inode cache trim timer is active"
+fi
+
+# A threshold of 1 forces the trim on any guest; the real one (250k) would
+# never trigger on this small test VM. The before/after counts come from the
+# script's own report, read in-process around the drop: two samples taken
+# through separate limactl round-trips would have dockerd, Squid and the
+# shells themselves allocating inodes in between.
+TRIM_REPORT=$(adm env INODE_TRIM_THRESHOLD=1 /usr/local/lib/sandbox/trim-inode-cache.sh | grep '^\[inode-cache\] trimmed:' || true)
+if [ -n "$TRIM_REPORT" ]; then
+    pass "trim-inode-cache.sh trims and reports when above its threshold"
+else
+    fail "trim-inode-cache.sh trims and reports when above its threshold"
+fi
+# "[inode-cache] trimmed: <before> cached inodes -> <after> (threshold 1)"
+INODES_BEFORE=$(echo "$TRIM_REPORT" | awk '{print $3}')
+INODES_AFTER=$(echo "$TRIM_REPORT" | awk '{print $7}')
+if [ -n "$INODES_AFTER" ] && [ "$INODES_AFTER" -lt "$INODES_BEFORE" ]; then
+    pass "trimming releases cached inodes ($INODES_BEFORE -> $INODES_AFTER)"
+else
+    fail "trimming releases cached inodes (${INODES_BEFORE:-?} -> ${INODES_AFTER:-?})"
+fi
+
+if adm env INODE_TRIM_THRESHOLD=100000000 /usr/local/lib/sandbox/trim-inode-cache.sh | grep -q .; then
+    fail "trim-inode-cache.sh is silent and does nothing below its threshold"
+else
+    pass "trim-inode-cache.sh is silent and does nothing below its threshold"
+fi
+
 # The stock image mounts /tmp as a tmpfs sized at half of RAM, so agent
 # scratch there (Claude Code's own scratchpad, for one) competes with the
 # workload for memory. Provisioning masks tmp.mount and unmounts the tmpfs

@@ -141,3 +141,43 @@ func TestCloudInitKeepsHostKeysAcrossBoots(t *testing.T) {
 	}
 	t.Error("no cloud-init drop-in under /etc/cloud/cloud.cfg.d/ is delivered to the guest")
 }
+
+// virtiofsd on the host holds one file descriptor per inode the guest keeps
+// cached, and the guest keeps them for as long as it has memory to spare. A
+// few weeks of tree walks over node_modules exhausted virtiofsd's fd limit and
+// the shared workspace stopped opening files. The trim timer is the bound.
+func TestInodeCacheTrimIsDelivered(t *testing.T) {
+	files, err := DataFiles()
+	if err != nil {
+		t.Fatalf("DataFiles: %v", err)
+	}
+	byPath := map[string]DataFile{}
+	for _, f := range files {
+		byPath[f.Path] = f
+	}
+	for _, want := range []struct {
+		path  string
+		perms string
+	}{
+		{"/usr/local/lib/sandbox/trim-inode-cache.sh", "0755"},
+		{"/etc/systemd/system/sandbox-inode-cache.service", "0644"},
+		{"/etc/systemd/system/sandbox-inode-cache.timer", "0644"},
+	} {
+		f, ok := byPath[want.path]
+		if !ok {
+			t.Errorf("missing guest path %s", want.path)
+			continue
+		}
+		if f.Permissions != want.perms {
+			t.Errorf("%s permissions = %s, want %s", want.path, f.Permissions, want.perms)
+		}
+	}
+	if svc, ok := byPath["/etc/systemd/system/sandbox-inode-cache.service"]; ok &&
+		!strings.Contains(svc.Content, "/usr/local/lib/sandbox/trim-inode-cache.sh") {
+		t.Error("sandbox-inode-cache.service does not run trim-inode-cache.sh")
+	}
+	if timer, ok := byPath["/etc/systemd/system/sandbox-inode-cache.timer"]; ok &&
+		!strings.Contains(timer.Content, "OnUnitActiveSec=") {
+		t.Error("sandbox-inode-cache.timer is not a recurring timer")
+	}
+}

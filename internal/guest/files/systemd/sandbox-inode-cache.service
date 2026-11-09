@@ -1,0 +1,13 @@
+[Unit]
+Description=code-vm trim of the guest inode cache
+# Each inode the guest keeps cached on a shared directory pins a file
+# descriptor in virtiofsd on the host, and the guest never lets go of them
+# while it has memory to spare. This bounds that: see trim-inode-cache.sh.
+# Driven by sandbox-inode-cache.timer; harmless to run by hand.
+ConditionPathExists=/etc/sandbox/provision.env
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/sandbox/trim-inode-cache.sh
+StandardOutput=journal
+StandardError=journal
