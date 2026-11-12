@@ -91,13 +91,15 @@ Fields:
   exactly as `profile add` already does.
 - `into` (required): directory relative to the agent's home where the
   repository content lands.
-- `ref` (optional): full commit hash, tag name or branch name, resolved in
-  that order: a full hash is looked up only as an object, never as a ref
-  name, and a tag is tried before a branch. The order fails safe: the
-  repository owner cannot shadow a pinned commit with a branch named like
-  its hash, or a tag with a same-named branch, and turn a source meant to
-  stay put into one that tracks. Omitted means the remote's default branch
-  (`origin/HEAD`).
+- `ref` (optional): full commit hash (SHA-1 or SHA-256, any case, stored
+  lowercase), tag name or branch name, resolved in that order. A full hash
+  is looked up only as an object, never as a ref name, so a branch or tag
+  named like the hash cannot shadow the pin; a tag is tried before a
+  branch, git's own precedence, so a branch added later under a tag's name
+  cannot redirect it. Only a full hash is a pin: a tag still moves when its
+  owner re-points it. Abbreviated hashes, `HEAD` and fully qualified
+  `refs/...` names are rejected at load with a message. Omitted means the
+  remote's default branch (`origin/HEAD`).
 
 Each source gets a **name** derived from the last path segment of `into`
 (`jira-ticket` above): every character outside `[a-zA-Z0-9-]` becomes `-`,

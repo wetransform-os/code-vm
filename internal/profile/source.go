@@ -32,7 +32,6 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 )
@@ -151,23 +150,20 @@ func environWithout(drop func(string) bool) []string {
 
 // resolveCommit resolves ref to a full commit id in the checkout at dir. An
 // empty ref means the checkout's HEAD, i.e. the remote's default branch. A
-// full commit id is looked up only as an object, never as a ref name, and
-// a name is tried as a tag before a branch: the order fails safe, since
-// the repository owner could otherwise shadow a pinned commit with a branch
-// named like its hash, or a tag with a same-named branch, and turn a source
-// that was meant to stay put into one that tracks. The error wraps
+// full commit id (validateSources has lowercased it) is looked up only as
+// an object, never as a ref name, so a branch or tag named like the hash
+// cannot shadow the pin. A name is looked up as a tag, then a branch, in
+// one for-each-ref call: git's own precedence, applied so that a branch
+// added later under a tag's name cannot redirect it. Only a full commit id
+// is a pin; a tag still moves when its owner re-points it. The error wraps
 // errRefNotFound when nothing resolves.
 func resolveCommit(dir, ref string) (string, error) {
-	candidates := []string{"HEAD"}
-	switch {
-	case ref == "":
-	case fullCommitRe.MatchString(ref):
-		candidates = []string{ref}
-	default:
-		candidates = []string{"refs/tags/" + ref, "refs/heads/" + ref}
-	}
-	for _, c := range candidates {
-		out, err := gitCmd(dir, "rev-parse", "--verify", "--quiet", c+"^{commit}").Output()
+	if ref == "" || FullCommitRe.MatchString(ref) {
+		object := "HEAD"
+		if ref != "" {
+			object = ref
+		}
+		out, err := gitCmd(dir, "rev-parse", "--verify", "--quiet", object+"^{commit}").Output()
 		if err == nil {
 			return strings.TrimSpace(string(out)), nil
 		}
@@ -175,9 +171,28 @@ func resolveCommit(dir, ref string) (string, error) {
 		if !errors.As(err, &ee) {
 			return "", fmt.Errorf("git rev-parse: %w", err)
 		}
+		return "", fmt.Errorf("ref %s %w", object, errRefNotFound)
 	}
-	if ref == "" {
-		ref = "HEAD"
+	// %(*objectname) is the peeled commit of an annotated tag and empty
+	// otherwise, so after whitespace splitting the commit is the second
+	// field either way. The patterns are prefixes and the output is sorted
+	// by refname (heads before tags), so the exact names are picked out
+	// here, tag first.
+	out, err := gitOutput(gitCmd(dir, "for-each-ref", "--format=%(refname) %(*objectname) %(objectname)",
+		"refs/tags/"+ref, "refs/heads/"+ref), "git for-each-ref")
+	if err != nil {
+		return "", err
+	}
+	commits := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if fields := strings.Fields(line); len(fields) >= 2 {
+			commits[fields[0]] = fields[1]
+		}
+	}
+	for _, name := range []string{"refs/tags/" + ref, "refs/heads/" + ref} {
+		if c, ok := commits[name]; ok {
+			return c, nil
+		}
 	}
 	return "", fmt.Errorf("ref %s %w", ref, errRefNotFound)
 }
@@ -442,9 +457,6 @@ func LocalRepoPath(repo string) (string, bool, error) {
 	return repo, true, nil
 }
 
-// fullCommitRe matches a full SHA-1 commit id.
-var fullCommitRe = regexp.MustCompile(`^[0-9a-f]{40}$`)
-
 // SyncSources clones or fetches the checkout of each of p's sources, in
 // manifest order, and reports each resolved commit to out. Only profile add
 // and update call it; Load resolves against whatever it left. A source that
@@ -603,7 +615,7 @@ func syncSource(ctx context.Context, dir string, s Source) (string, error) {
 		}
 	}
 	commit, err := resolveCommit(dir, s.Ref)
-	if !fullCommitRe.MatchString(s.Ref) {
+	if !FullCommitRe.MatchString(s.Ref) {
 		if err != nil {
 			return "", err
 		}
