@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/wetransform/code-vm/internal/config"
+	"github.com/wetransform/code-vm/internal/profile"
 )
 
 // addMount adds path to the shared directories unless an existing mount
@@ -64,6 +65,9 @@ func newMountCmd() *cobra.Command {
 				return err
 			}
 			if err := updated.MountsExcludeTree(config.ProfilesDirFor(path), "the code-vm profiles"); err != nil {
+				return err
+			}
+			if err := updated.MountsExcludeTree(profile.SourcesDir(config.ProfilesDirFor(path)), "the code-vm profile sources"); err != nil {
 				return err
 			}
 			if err := updated.MountsExcludeTree(config.SSHDirFor(path), "the agent SSH key"); err != nil {

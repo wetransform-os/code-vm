@@ -359,7 +359,17 @@ func (f SyncFailure) Unwrap() error { return f.Err }
 // the caller's concern.
 func LocalRepoPath(repo string) (string, bool, error) {
 	if p, ok := strings.CutPrefix(repo, "file://"); ok {
-		dec, err := url.PathUnescape(p)
+		// file://host/path: git ignores the authority and opens /path, so
+		// only the two spellings that plainly mean "this machine" are
+		// accepted; any other host would silently turn into a local path.
+		i := strings.Index(p, "/")
+		if i < 0 {
+			return "", true, fmt.Errorf("repository URL %s: file URL has no path", repo)
+		}
+		if host := p[:i]; host != "" && host != "localhost" {
+			return "", true, fmt.Errorf("repository URL %s: file URL host %q is not supported; use file:///path or file://localhost/path", repo, host)
+		}
+		dec, err := url.PathUnescape(p[i:])
 		if err != nil {
 			return "", true, fmt.Errorf("repository URL %s: %w", repo, err)
 		}

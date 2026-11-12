@@ -111,6 +111,48 @@ func TestMountRefusesProfilesDirectoryWithoutSavingOrRestarting(t *testing.T) {
 	}
 }
 
+// The sources tree holds the bare checkouts `profile update` fetches into
+// and `Load` archives from; mounting it would let the agent rewrite that git
+// state. The updated-config guard in mount must cover it like the profiles
+// tree, not only the per-invocation guard in loadConfig.
+func TestMountRefusesSourcesDirectoryWithoutSavingOrRestarting(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	sourcesRoot := filepath.Join(dir, "sources")
+	if err := os.MkdirAll(sourcesRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "config.yaml")
+	before, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := installFakeClient(t, "Running")
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"mount", sourcesRoot})
+	err = root.Execute()
+	if err == nil {
+		t.Fatalf("expected mount to refuse the sources directory; output:\n%s", out.String())
+	}
+	if !strings.Contains(err.Error(), "expose the code-vm profile sources") {
+		t.Errorf("error = %v, want a sources-guard refusal", err)
+	}
+
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("config file was modified despite the refused mount:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	if len(r.calls) != 0 {
+		t.Errorf("expected no guest interaction before the guard runs, got %v", r.calls)
+	}
+}
+
 // Resolution needs nothing from the guest, so an unmapped secret must fail
 // `code-vm mount` before the running VM is stopped for the restart — leaving
 // it running rather than stopped-and-not-restarted.
