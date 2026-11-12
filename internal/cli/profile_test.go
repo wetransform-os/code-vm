@@ -1151,9 +1151,18 @@ func TestCheckRepo(t *testing.T) {
 	if err := os.Symlink(filepath.Join(outside, "ok"), filepath.Join(projects, "out")); err != nil {
 		t.Fatal(err)
 	}
+	// A url.insteadOf rule in the user's git config is applied by every
+	// network git command, so the guard must judge the rewritten URL: this
+	// one turns a remote-looking URL into a path inside projectsRoot.
+	gitconfig := filepath.Join(base, "gitconfig")
+	if err := os.WriteFile(gitconfig, []byte("[url \""+filepath.Join(projects, "skills")+"\"]\n\tinsteadOf = https://rewritten.invalid/skills\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", gitconfig)
 	c := config.Config{ProjectsRoot: projects, ExtraMounts: []string{extra}}
 	for repo, want := range map[string]string{
 		"https://example.invalid/r.git":                  "",
+		"https://rewritten.invalid/skills":               "lies inside the shared directory " + projects,
 		"git@example.invalid:o/r.git":                    "",
 		"file:x/r.git":                                   "",
 		filepath.Join(outside, "ok"):                     "",
