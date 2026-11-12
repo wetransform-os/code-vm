@@ -136,6 +136,23 @@ func (r *repoRefusal) Error() string { return r.msg }
 // "link/../x" is not "x".
 func checkRepo(c config.Config, repo, what string) error {
 	fix := "use an absolute path or a file:// URL outside the shared directories, or a remote URL"
+	// Judge what git will open, not what the manifest says: a
+	// url.<base>.insteadOf rule in the user's git config can turn a remote
+	// URL into a local path.
+	resolved, err := profile.ResolveRepoURL(repo)
+	if err != nil {
+		return &repoRefusal{msg: err.Error(), hint: fix}
+	}
+	if resolved != repo {
+		if err := checkRepo(c, resolved, what); err != nil {
+			var r *repoRefusal
+			if errors.As(err, &r) {
+				r.msg = fmt.Sprintf("%s (your git url.insteadOf configuration rewrites %s to %s)", r.msg, repo, resolved)
+			}
+			return err
+		}
+		return nil
+	}
 	local, ok, err := profile.LocalRepoPath(repo)
 	if err != nil {
 		return &repoRefusal{msg: err.Error(), hint: fix}

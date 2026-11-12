@@ -207,10 +207,12 @@ warning**, never an error:
   the reason. It is not rendered: no `sources.list` line, no archive. The
   guest step therefore does not touch its destination directory, so a
   previously applied tree stays as it was and a fresh VM simply lacks it.
-- Every command that loads profiles (`start`, `shell`, `profile apply`,
-  `profile list`, …) prints the warning to stderr once per unavailable
+- Every command that loads profiles for the VM (`start`, `shell`,
+  `profile apply`, …) prints the warning to stderr once per unavailable
   source, in the form `profile <name>: source <source> unavailable
-  (<reason>); run code-vm profile update <name>`.
+  (<reason>); run code-vm profile update <name>`. `profile list` shows the
+  same state inline on the source's own line instead of warning, since the
+  listing is where the user is already looking.
 - The remaining parts of the profile — files, templates, packages, shell,
   hook, other sources — apply as normal.
 
@@ -398,8 +400,12 @@ New surfaces, each validated host-side before anything is rendered:
 - A local `repo` must be an absolute path or a `file://` URL (checked
   after percent-decoding, as git decodes it) with no `..` segment, must
   resolve, and every prefix of it must resolve outside every shared
-  directory: `profile add` and `profile update` refuse anything else before
-  any git command runs, because fetching runs `git upload-pack` in that
+  directory. The check judges the URL as git will open it, after the user's
+  `url.<base>.insteadOf` rewrites (`git ls-remote --get-url`, which expands
+  without contacting anything), so a rewrite to a local path cannot slip a
+  remote-looking manifest value past it. `profile add` and `profile update`
+  refuse anything else before any git command runs, because fetching runs
+  `git upload-pack` in that
   repository under its own config. Checkouts clone with `--no-local` so
   its `objects/info/alternates` is never copied, and every network git
   command runs in `sources/<profile>/` rather than the user's working

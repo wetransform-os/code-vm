@@ -380,6 +380,24 @@ func (f SyncFailure) Error() string {
 
 func (f SyncFailure) Unwrap() error { return f.Err }
 
+// ResolveRepoURL returns repo as git will actually open it: the user's
+// url.<base>.insteadOf rules apply to every network command (which keep the
+// user's config for credentials and transports), so a URL that reads as
+// remote in the manifest may name a local path by the time git runs. The
+// expansion runs with --get-url, which exits without contacting anything,
+// from the filesystem root so the argument can never be read as a remote
+// name of whatever repository the process happens to be in.
+func ResolveRepoURL(repo string) (string, error) {
+	cmd := exec.Command("git", "ls-remote", "--get-url", "--", repo)
+	cmd.Env = gitEnviron()
+	cmd.Dir = string(filepath.Separator)
+	out, err := gitOutput(cmd, "git ls-remote --get-url")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // LocalRepoPath reports whether repo names a repository on the local
 // filesystem, and returns the path git will open. It follows git's own
 // rule: a URL with a scheme is remote except file://, whose path git
