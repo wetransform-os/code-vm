@@ -96,8 +96,10 @@ func DataFiles() ([]DataFile, error) {
 }
 
 // ConfigFiles returns the subset of DataFiles that lands under ConfigRoot:
-// what lock-settings.sh consumes. Scripts and units are left out on purpose;
-// they are only ever installed by Lima before a boot.
+// what lock-settings.sh consumes. Scripts and units are left out on purpose:
+// Lima installs them before a boot. The two scripts the apply paths touch
+// afterwards (lock-settings.sh is verified, apply-profiles.sh reinstalled)
+// are fetched individually by their guest path, not re-delivered as config.
 func ConfigFiles() ([]DataFile, error) {
 	all, err := DataFiles()
 	if err != nil {

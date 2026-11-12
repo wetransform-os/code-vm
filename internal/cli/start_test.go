@@ -22,11 +22,17 @@ type recordingRunner struct {
 	// outputs answers Output calls whose argv contains the key; statusOut
 	// answers everything else.
 	outputs map[string]string
-	calls   [][]string
+	// failOn makes Run fail for any argv containing it, so a guest
+	// precondition (a missing boot marker, say) can be simulated.
+	failOn string
+	calls  [][]string
 }
 
 func (r *recordingRunner) Run(_ context.Context, args ...string) error {
 	r.calls = append(r.calls, args)
+	if r.failOn != "" && strings.Contains(strings.Join(args, " "), r.failOn) {
+		return fmt.Errorf("fake failure on %q", r.failOn)
+	}
 	return nil
 }
 

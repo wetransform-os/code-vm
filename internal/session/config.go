@@ -23,16 +23,54 @@ const LockSettingsScript = "/usr/local/lib/sandbox/lock-settings.sh"
 // and this binary's expectations of it (above all, that it is safe to run
 // against a live agent) would not hold.
 func verifyGuestScript(ctx context.Context, d Deps, script guest.DataFile) error {
-	out, err := d.Client.AdminOutput(ctx, []string{"sha256sum", script.Path})
+	same, err := guestScriptMatches(ctx, d, script)
 	if err != nil {
-		return fmt.Errorf("inspect %s in the guest: %w", script.Path, err)
+		return err
 	}
-	got, _, _ := strings.Cut(strings.TrimSpace(string(out)), " ")
-	sum := sha256.Sum256([]byte(script.Content))
-	if got != hex.EncodeToString(sum[:]) {
+	if !same {
 		return fmt.Errorf("the VM runs an older %s than this code-vm ships; restart it with `code-vm stop && code-vm start` so the boot scripts update, then retry", script.Path)
 	}
 	return nil
+}
+
+// guestScriptMatches reports whether the guest's copy of script is
+// byte-identical to what this binary ships, by comparing sha256 digests so
+// only a short hash crosses the admin channel. A missing guest file simply
+// does not match.
+func guestScriptMatches(ctx context.Context, d Deps, script guest.DataFile) (bool, error) {
+	// test -f first: sha256sum exits non-zero on a missing file, which must
+	// read as "does not match", not as a transport failure.
+	out, err := d.Client.AdminOutput(ctx, []string{
+		"sh", "-c", `test -f "$1" && exec sha256sum "$1"; echo missing`, "hash", script.Path,
+	})
+	if err != nil {
+		return false, fmt.Errorf("inspect %s in the guest: %w", script.Path, err)
+	}
+	got, _, _ := strings.Cut(strings.TrimSpace(string(out)), " ")
+	sum := sha256.Sum256([]byte(script.Content))
+	return got == hex.EncodeToString(sum[:]), nil
+}
+
+// RequireBootComplete refuses to touch a guest whose boot is still running.
+// It must be the first guest interaction of any apply path: sandbox-boot.sh
+// provisions the very trees and scripts an apply replaces, and interleaving
+// with it would trip the boot's error trap or leave the two fighting over
+// one directory.
+func RequireBootComplete(ctx context.Context, d Deps) error {
+	if err := d.Client.Admin(ctx, []string{"test", "-f", bootCompleteMarker}); err != nil {
+		return fmt.Errorf("the VM has not finished booting (no %s yet); wait for `code-vm start` to return, then retry", bootCompleteMarker)
+	}
+	return nil
+}
+
+// randomSuffix returns n random bytes as hex, for unpredictable
+// per-invocation guest paths that cannot be squatted.
+func randomSuffix(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate random name: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // configSwapLock serialises the swap-and-lock step between concurrent
@@ -65,11 +103,11 @@ rm -rf "$2"
 // stagingTreeName returns an unpredictable per-invocation sibling of the
 // live tree, so two applies never build into the same directory.
 func stagingTreeName() (string, error) {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("generate staging name: %w", err)
+	suffix, err := randomSuffix(8)
+	if err != nil {
+		return "", err
 	}
-	return guest.ConfigRoot + ".new-" + hex.EncodeToString(b[:]), nil
+	return guest.ConfigRoot + ".new-" + suffix, nil
 }
 
 // cleanupStagingTree removes an abandoned staging tree, best effort and on
@@ -106,8 +144,8 @@ func PushConfig(ctx context.Context, d Deps, files []guest.DataFile, lockScript 
 	if err := verifyGuestScript(ctx, d, lockScript); err != nil {
 		return err
 	}
-	if err := d.Client.Admin(ctx, []string{"test", "-f", bootCompleteMarker}); err != nil {
-		return fmt.Errorf("the VM has not finished booting (no %s yet); wait for `code-vm start` to return, then retry", bootCompleteMarker)
+	if err := RequireBootComplete(ctx, d); err != nil {
+		return err
 	}
 	stage, err := stagingTreeName()
 	if err != nil {

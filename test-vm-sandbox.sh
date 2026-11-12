@@ -784,10 +784,26 @@ assert_ok "profile update fetches a declared source" \
 # shellcheck disable=SC2016 # $HOME expands guest-side
 agent bash -c 'mkdir -p "$HOME/.claude/skills" && ln -sfn /etc "$HOME/.claude/skills/fixture"' > /dev/null 2>&1
 
+# A VM booted from an older build keeps that build's applier; apply must
+# reinstall the current one before running it, or a new step (sources) would
+# silently not run until the next restart. Simulate the stale script with a
+# marker line that only a reinstall removes.
+adm bash -c 'echo "# stale-applier-marker" >> /usr/local/lib/sandbox/apply-profiles.sh'
+
 if "${CODE_VM_ARGS[@]}" profile apply > /dev/null 2>&1; then
     pass "profile apply succeeds"
 else
     fail "profile apply succeeds"
+fi
+
+# test -f first: a missing applier would also make grep fail, which must
+# not pass as "reinstalled".
+assert_ok "profile apply reinstalls the current guest applier" \
+    adm bash -c 'test -f /usr/local/lib/sandbox/apply-profiles.sh && ! grep -q stale-applier-marker /usr/local/lib/sandbox/apply-profiles.sh'
+if [ "$(adm stat -c '%u %a' /usr/local/lib/sandbox/apply-profiles.sh)" = "0 755" ]; then
+    pass "the reinstalled applier is root-owned 0755"
+else
+    fail "the reinstalled applier is root-owned 0755 (got $(adm stat -c '%u %a' /usr/local/lib/sandbox/apply-profiles.sh))"
 fi
 
 if adm cat "/home/$AGENT_USER/.claude/CLAUDE.md" 2> /dev/null | grep -q "fixture rules"; then

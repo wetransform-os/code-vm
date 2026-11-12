@@ -291,6 +291,20 @@ Both delivery paths carry these files unchanged: `mode: data` entries at
 boot (root-owned 0444) and the staged push on `profile apply`, which already
 clears the profile root first.
 
+`profile apply` also brings `apply-profiles.sh` itself up to the running
+build before invoking it: after the boot-complete marker is present it
+compares the guest copy's hash with this binary's, and on a mismatch stages
+the new script root-owned beside the live path and renames it over, so the
+canonical path is never absent for a concurrent exec. The applier is
+otherwise delivered only by the Lima template at boot, so a VM booted from
+an older code-vm would keep running an applier without the sources step
+while the pushed tree already carried `sources.list`: the inputs would be
+silently ignored until the next restart. This departs from `config apply`,
+which verifies `lock-settings.sh` and refuses on a mismatch; it is sound
+only while the applier stays self-contained against the pushed tree,
+`provision.env` and the base image, and must revert to verify-and-refuse
+if it ever depends on a newer boot script.
+
 ### CLI changes
 
 - `profile add <git-url> [name]` unchanged for real profiles. With
