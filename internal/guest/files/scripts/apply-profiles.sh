@@ -13,6 +13,8 @@
 #   <name>/files.list  the paths this profile version ships — the applier
 #                      installs exactly these, so stale tree content left by
 #                      an earlier version is inert
+#   <name>/sources.list  "<name> <into>" lines: git-archive sources to install
+#   <name>/sources/<name>.tar.gz.b64  base64 gzip tarball of one source
 #   <name>/hook        hook script, run as the agent user
 #
 # File and shell failures abort (set -e): they are local and deterministic, so
@@ -95,6 +97,41 @@ run_as_agent_sh() {
         no_proxy=localhost,127.0.0.1 \
         bash -c "$@"
 }
+
+# ── Sources ──────────────────────────────────────────────────────────────────
+# Each source is a git-archive tarball (base64) that code-vm rendered on the
+# host and listed in <profile>/sources.list as "<name> <into>". The destination
+# is wiped before extraction: it is a canonical directory, so files removed
+# upstream disappear from the guest too instead of lingering. Sources that are
+# unavailable on the host never reach this step — the host leaves them out of
+# sources.list — so everything listed here is expected to install.
+# Like the files step, this runs with the agent's own privileges
+# (run_as_agent_sh): the archive comes from a single git tree, so it cannot
+# hold two entries of one name, and it is extracted into a freshly created
+# empty directory, so any symlink it creates can only redirect writes the
+# agent could already make. PROFILE_SOURCES gates the loop like PROFILE_FILES.
+for name in ${PROFILE_SOURCES:-}; do
+    list="$PROFILE_ROOT/$name/sources.list"
+    [ -f "$list" ] || continue
+    while read -r sname into; do
+        [ -n "$sname" ] || continue
+        # Defense in depth: the host validates and cleans $into, but this
+        # script is root, so an unsafe destination is rejected again here.
+        case "$into" in
+            "" | . | /* | */../* | */.. | ../* | ..)
+                echo "[profiles] ERROR: unsafe source destination: $into" >&2
+                exit 1
+                ;;
+        esac
+        src="$PROFILE_ROOT/$name/sources/$sname.tar.gz.b64"
+        dst="$AGENT_HOME/$into"
+        # pipefail: tar can succeed on a complete gzip stream even when base64
+        # fails on trailing garbage after it; that must still abort.
+        # shellcheck disable=SC2016 # the inner bash -c program expands its own args
+        run_as_agent_sh 'set -o pipefail; rm -rf "$1" && mkdir -p "$1" && base64 -d "$2" | tar -xz -C "$1"' _ "$dst" "$src"
+        log "  $name: ~/$into (source $sname)"
+    done < "$list"
+done
 
 # ── Files ────────────────────────────────────────────────────────────────────
 # Installs run with the agent's own privileges (run_as_agent_sh above), not
