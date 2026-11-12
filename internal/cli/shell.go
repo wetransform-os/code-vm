@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -34,8 +35,8 @@ func resolveWorkdir(c config.Config, cwd string) (string, error) {
 
 // runDefault is the root command's action: bring the VM up, verify the current
 // directory is shared, then run the command as the agent user at that path.
-func runDefault(ctx context.Context, args []string) error {
-	c, profiles, cfgPath, err := loadConfigWithProfiles()
+func runDefault(ctx context.Context, warn io.Writer, args []string) error {
+	c, profiles, cfgPath, err := loadConfigWithProfiles(warn)
 	if err != nil {
 		return err
 	}

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -133,5 +134,47 @@ func TestLoadConfigRefusesMountOverSSHDir(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "agent SSH key") {
 		t.Errorf("loadConfig error = %v, want an agent SSH key refusal", err)
+	}
+}
+
+// Sources are trusted host input shipped into the agent home, so a shared
+// directory over them must be refused like one over the profiles directory.
+func TestLoadConfigRefusesMountOverSourcesDir(t *testing.T) {
+	dir := withScratchConfig(t)
+	src := filepath.Join(dir, "sources")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	appendConfig(t, "extraMounts:\n  - "+src+"\n")
+
+	_, _, err := loadConfig()
+	if err == nil {
+		t.Fatal("expected loadConfig to refuse a mount over the sources directory")
+	}
+	if !strings.Contains(err.Error(), "profile sources") {
+		t.Errorf("loadConfig error = %v, want a profile sources refusal", err)
+	}
+}
+
+// An unavailable source is a warning, not an error: the rest of the profile
+// still applies.
+func TestLoadConfigWithProfilesWarnsUnavailableSource(t *testing.T) {
+	dir := withScratchConfig(t)
+	pdir := filepath.Join(dir, "profiles", "p1")
+	if err := os.MkdirAll(pdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "sources:\n  - repo: https://example.invalid/r\n    into: .claude/skills/x\n"
+	if err := os.WriteFile(filepath.Join(pdir, "profile.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	appendConfig(t, "profiles:\n  - p1\n")
+
+	var buf bytes.Buffer
+	if _, _, _, err := loadConfigWithProfiles(&buf); err != nil {
+		t.Fatalf("loadConfigWithProfiles: %v", err)
+	}
+	if !strings.Contains(buf.String(), "unavailable (never fetched); run code-vm profile update") {
+		t.Errorf("warn output = %q, want an unavailable-source warning", buf.String())
 	}
 }

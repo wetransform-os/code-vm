@@ -27,7 +27,7 @@ func newSecretsCmd() *cobra.Command {
 			"secrets.yaml snippet.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			c, profiles, path, err := loadConfigWithProfiles()
+			c, profiles, path, err := loadConfigWithProfiles(cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}

@@ -2,11 +2,14 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -16,7 +19,9 @@ import (
 	"github.com/wetransform/code-vm/internal/session"
 )
 
-// profilesDir resolves the bundle directory next to the active config file.
+// profilesDir resolves the bundle directory next to the active config file,
+// as an absolute path: git commands run with it (or a directory below it)
+// as their working directory, and must not depend on the process's.
 func profilesDir() (string, error) {
 	path := configPath
 	if path == "" {
@@ -26,7 +31,7 @@ func profilesDir() (string, error) {
 		}
 		path = p
 	}
-	return config.ProfilesDirFor(path), nil
+	return filepath.Abs(config.ProfilesDirFor(path))
 }
 
 // gitOrigin reports a profile's git remote origin, trimmed, or "local" when
@@ -78,12 +83,162 @@ func newProfileCmd() *cobra.Command {
 	return cmd
 }
 
+const sourcesTrustWarning = `A profile's sources are pulled from the repositories its author names and
+placed in the agent's home as-is; trusting the profile means trusting those
+repositories at the refs it pins.`
+
+// wrapperManifest is the profile.yaml of a profile that only wraps one
+// source. Every value is double-quoted (strconv.Quote yields valid YAML
+// escapes), so none can break the YAML and none is read as anything but a
+// string: a bare `ref: null` would decode as no ref at all. LoadManifest
+// then applies the manifest rules to the values themselves.
+func wrapperManifest(url, into, ref string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "description: %s\nsources:\n  - repo: %s\n    into: %s\n",
+		strconv.Quote(url+" → ~/"+into), strconv.Quote(url), strconv.Quote(into))
+	if ref != "" {
+		fmt.Fprintf(&b, "    ref: %s\n", strconv.Quote(ref))
+	}
+	return b.String()
+}
+
+// reportSyncFailures prints each failed source. A failed source never fails
+// add or stops update: the rest of the profile is still useful, and Load
+// marks the source unavailable until a later update succeeds. A refused
+// repository will not succeed on a retry, so it says what to change instead.
+func reportSyncFailures(w io.Writer, fails []profile.SyncFailure) {
+	for _, f := range fails {
+		hint := "the source stays unavailable until profile update succeeds"
+		var r *repoRefusal
+		if errors.As(f.Err, &r) {
+			hint = "the source stays unavailable; " + r.hint
+		}
+		fmt.Fprintf(w, "%v; %s\n", f, hint)
+	}
+}
+
+// repoRefusal is a repository checkRepo refuses to let git touch, the only
+// kind of error checkRepo returns; hint says what to change.
+type repoRefusal struct{ msg, hint string }
+
+func (r *repoRefusal) Error() string { return r.msg }
+
+// checkRepo refuses a repository (a profile bundle's URL or a source's repo,
+// what names which in the message) that is a local path the agent may be
+// able to write. Fetching from a local repository runs git upload-pack in
+// it, under that repository's own config (core.alternateRefsCommand and the
+// like), so a repository the agent can write would run its commands on the
+// host on the next update. Remote URLs pass. A local repository must be an
+// absolute path or a file:// URL (whose percent-encoding git decodes, so the
+// check sees the decoded path) without any ".." segment, must resolve, and
+// its fully resolved location must lie outside every shared directory. The
+// raw path is resolved, never cleaned lexically first: through a symlink,
+// "link/../x" is not "x".
+func checkRepo(c config.Config, repo, what string) error {
+	fix := "use an absolute path or a file:// URL outside the shared directories, or a remote URL"
+	local, ok, err := profile.LocalRepoPath(repo)
+	if err != nil {
+		return &repoRefusal{msg: err.Error(), hint: fix}
+	}
+	if !ok {
+		return nil
+	}
+	if !filepath.IsAbs(local) {
+		return &repoRefusal{msg: fmt.Sprintf("repository path %s is relative; a local repository must be an absolute path or a file:// URL", local), hint: fix}
+	}
+	if slices.Contains(strings.Split(filepath.ToSlash(local), "/"), "..") {
+		return &repoRefusal{msg: fmt.Sprintf("repository path %s contains a \"..\" segment, which is not allowed", local), hint: fix}
+	}
+	// A path that does not resolve is refused too: inside a shared
+	// directory, the agent could create the repository between this check
+	// and git's run.
+	real, err := filepath.EvalSymlinks(local)
+	if err != nil {
+		return &repoRefusal{msg: fmt.Sprintf("repository path %s does not resolve: %v", local, err),
+			hint: "point it at an existing repository outside the shared directories, or a remote URL"}
+	}
+	var mounts []string
+	for _, m := range c.Mounts() {
+		mounts = append(mounts, config.CanonicalizeExisting(m))
+	}
+	// Not only where the path ends up: every prefix's resolution must stay
+	// outside the shared directories too. A symlink inside one that points
+	// outside resolves to a safe place now, but the agent can retarget it
+	// before git follows it.
+	shared, m := false, ""
+	prefix := string(filepath.Separator)
+	for _, seg := range strings.Split(filepath.Clean(local), string(filepath.Separator)) {
+		if seg == "" {
+			continue
+		}
+		prefix = filepath.Join(prefix, seg)
+		r, err := filepath.EvalSymlinks(prefix)
+		if err != nil {
+			r = prefix // unreachable: the whole path resolved above
+		}
+		if m, shared = config.CoveringMount(mounts, r); shared {
+			break
+		}
+	}
+	if shared {
+		return &repoRefusal{
+			msg: fmt.Sprintf("repository path %s lies inside the shared directory %s, which the agent can write; "+
+				"%s must come from a path or URL the agent cannot modify", real, m, what),
+			hint: "move the repository outside the shared directories or use a remote URL",
+		}
+	}
+	return nil
+}
+
+// pullProfile fast-forwards the profile clone at dir, unless checkRepo
+// refuses its origin: pulling runs git upload-pack in the origin repository,
+// so a clone of a repository inside a shared directory would hand the agent
+// the host on every update. git runs in the clone itself, inside the
+// profiles directory, which the agent cannot write.
+func pullProfile(cmd *cobra.Command, c config.Config, dir string) error {
+	// A clone without an origin has nothing checkRepo could judge; the
+	// pull then fails on its own.
+	if out, err := exec.CommandContext(cmd.Context(), "git", "-C", dir, "remote", "get-url", "origin").Output(); err == nil {
+		var r *repoRefusal
+		if err := checkRepo(c, strings.TrimSpace(string(out)), "profiles"); errors.As(err, &r) {
+			return fmt.Errorf("profile clone origin: %w; %s", err, r.hint)
+		}
+	}
+	return runGit(cmd.Context(), cmd, dir, "pull", "--ff-only")
+}
+
+// syncSources is profile.SyncSources minus the sources checkRepo refuses:
+// each is reported as a failure instead and left untouched (no checkout
+// created or fetched).
+func syncSources(ctx context.Context, c config.Config, dir string, p profile.Profile, out io.Writer) []profile.SyncFailure {
+	var refused []profile.SyncFailure
+	allowed := p
+	allowed.Sources = nil
+	for _, s := range p.Sources {
+		if err := checkRepo(c, s.Repo, "sources"); err != nil {
+			refused = append(refused, profile.SyncFailure{Profile: p.Name, Source: s.Name, Repo: s.Repo, Err: err})
+			continue
+		}
+		allowed.Sources = append(allowed.Sources, s)
+	}
+	return append(refused, profile.SyncSources(ctx, dir, allowed, out)...)
+}
+
 func newProfileAddCmd() *cobra.Command {
-	return &cobra.Command{
+	var into, ref string
+	cmd := &cobra.Command{
 		Use:   "add <git-url> [name]",
-		Short: "Clone a profile bundle into the profiles directory",
-		Args:  cobra.RangeArgs(1, 2),
+		Short: "Clone a profile bundle, or wrap a plain repo as one with --into",
+		Long: "Clone a profile bundle into the profiles directory and fetch the sources\n" +
+			"it declares. With --into, the repository is not a profile itself:\n" +
+			"a profile is generated that places it at the given path under the agent's\n" +
+			"home, optionally pinned to --ref.",
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Usage checks come before anything is cloned or written.
+			if ref != "" && into == "" {
+				return fmt.Errorf("--ref is only valid together with --into")
+			}
 			url := args[0]
 			name := strings.TrimSuffix(filepath.Base(url), ".git")
 			if len(args) == 2 {
@@ -94,6 +249,23 @@ func newProfileAddCmd() *cobra.Command {
 			// outside the profiles directory.
 			if err := profile.ValidateName(name); err != nil {
 				return err
+			}
+			// The mounts decide which local repositories are refused.
+			c, _, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			// The URL is the user's own argument, so a refusal is a hard
+			// error before anything is written: for a bundle, git would
+			// otherwise run in an agent-writable repository now and on
+			// every update; for a wrapper, its only source could never sync.
+			whatRepo := "profiles"
+			if into != "" {
+				whatRepo = "sources"
+			}
+			var refusal *repoRefusal
+			if err := checkRepo(c, url, whatRepo); errors.As(err, &refusal) {
+				return fmt.Errorf("%w; %s", err, refusal.hint)
 			}
 			dir, err := profilesDir()
 			if err != nil {
@@ -106,20 +278,51 @@ func newProfileAddCmd() *cobra.Command {
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return err
 			}
-			if err := runGit(cmd.Context(), cmd, "", "clone", url, dst); err != nil {
+			what := "cloned profile"
+			if into != "" {
+				what = "generated profile"
+				if err := os.MkdirAll(dst, 0o755); err != nil {
+					return err
+				}
+				if err := os.WriteFile(filepath.Join(dst, "profile.yaml"), []byte(wrapperManifest(url, into, ref)), 0o644); err != nil {
+					_ = os.RemoveAll(dst)
+					return err
+				}
+			} else if err := runGit(cmd.Context(), cmd, dir, "clone", "--", url, dst); err != nil {
+				// Run in the profiles directory, not the process's working
+				// directory: git prefers an existing directory relative to
+				// it over an scp-like URL, and one planted in the project
+				// code-vm was started from would be cloned instead.
 				return err
 			}
-			loaded, loadErr := profile.Load(dir, name)
-			if loadErr != nil {
-				// A broken bundle must not linger: it would fail every
-				// loadConfigWithProfiles the moment someone activates it.
-				if rmErr := os.RemoveAll(dst); rmErr != nil {
-					return fmt.Errorf("cloned profile is invalid (%w) and cleanup also failed: %v", loadErr, rmErr)
+			// A broken bundle must not linger: it would fail every
+			// loadConfigWithProfiles the moment someone activates it. Its
+			// checkouts go with it, so a later add of the same name starts
+			// clean.
+			discard := func(loadErr error) error {
+				rmErr := os.RemoveAll(dst)
+				if err := os.RemoveAll(filepath.Join(profile.SourcesDir(dir), name)); rmErr == nil {
+					rmErr = err
 				}
-				return fmt.Errorf("cloned profile is invalid and was removed again: %w", loadErr)
+				if rmErr != nil {
+					return fmt.Errorf("%s is invalid (%w) and cleanup also failed: %v", what, loadErr, rmErr)
+				}
+				return fmt.Errorf("%s is invalid and was removed again: %w", what, loadErr)
+			}
+			manifest, err := profile.LoadManifest(dir, name)
+			if err != nil {
+				return discard(err)
 			}
 			out := cmd.OutOrStdout()
+			reportSyncFailures(cmd.ErrOrStderr(), syncSources(cmd.Context(), c, dir, manifest, out))
+			loaded, err := profile.Load(dir, name)
+			if err != nil {
+				return discard(err)
+			}
 			fmt.Fprintf(out, "Installed profile %s.\n\n%s\n\n", name, trustWarning)
+			if len(loaded.Manifest.Sources) > 0 {
+				fmt.Fprintf(out, "%s\n\n", sourcesTrustWarning)
+			}
 			fmt.Fprintf(out, "Activate it by adding to your config:\n\nprofiles:\n  - %s\n", name)
 			// Flagged separately from the generic trust warning above: a
 			// mapped secret's value becomes readable by the agent and by
@@ -137,14 +340,22 @@ func newProfileAddCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&into, "into", "", "wrap the repository as a source placed at this path under the agent's home")
+	cmd.Flags().StringVar(&ref, "ref", "", "branch, tag or commit to pin the wrapped source to (requires --into)")
+	return cmd
 }
 
 func newProfileUpdateCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "update [name]",
-		Short: "Pull the latest version of one or all git-managed profiles",
+		Short: "Update one or all profiles: pull git clones and fetch sources",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// The mounts decide which local source paths are refused.
+			c, _, err := loadConfig()
+			if err != nil {
+				return err
+			}
 			dir, err := profilesDir()
 			if err != nil {
 				return err
@@ -182,23 +393,110 @@ func newProfileUpdateCmd() *cobra.Command {
 					names = append(names, e.Name())
 				}
 			}
-			for _, name := range names {
-				p := filepath.Join(dir, name)
-				if _, err := os.Stat(filepath.Join(p, ".git")); err != nil {
-					// Hand-authored local profiles are first-class; only git
-					// clones have somewhere to pull from.
-					fmt.Fprintf(out, "%s: not a git clone, skipped\n", name)
-					continue
+			// Failed sources are collected across all profiles rather than
+			// aborting: one unreachable repo must not hold back the others,
+			// and a failed fetch keeps the old checkout usable anyway. Without
+			// a name, an invalid profile or a failed pull is collected the
+			// same way: one broken profile must not stop the others from
+			// updating.
+			explicit := len(args) > 0
+			errOut := cmd.ErrOrStderr()
+			var fails []profile.SyncFailure
+			var invalid, unpulled []string
+			// finish prints what was collected and returns err, or an error
+			// summarising the collection when err is nil, so every exit path
+			// reports the failures gathered so far.
+			finish := func(err error) error {
+				if len(unpulled) > 0 {
+					fmt.Fprintf(errOut, "%d profile(s) could not be pulled: %s\n", len(unpulled), strings.Join(unpulled, ", "))
 				}
-				if err := runGit(cmd.Context(), cmd, p, "pull", "--ff-only"); err != nil {
+				if len(invalid) > 0 {
+					fmt.Fprintf(errOut, "%d profile(s) invalid: %s\n", len(invalid), strings.Join(invalid, ", "))
+				}
+				if len(fails) > 0 {
+					fmt.Fprintf(errOut, "%d source(s) could not be updated:\n", len(fails))
+					for _, f := range fails {
+						fmt.Fprintf(errOut, "  %v\n", f)
+					}
+				}
+				if err != nil {
 					return err
 				}
+				var parts []string
+				if len(unpulled) > 0 {
+					parts = append(parts, fmt.Sprintf("%d profile(s) could not be pulled: %s", len(unpulled), strings.Join(unpulled, ", ")))
+				}
+				if len(invalid) > 0 {
+					parts = append(parts, fmt.Sprintf("%d profile(s) invalid", len(invalid)))
+				}
+				if len(fails) > 0 {
+					parts = append(parts, fmt.Sprintf("%d source(s) could not be updated", len(fails)))
+				}
+				if len(parts) > 0 {
+					return errors.New(strings.Join(parts, "; "))
+				}
+				return nil
+			}
+			for _, name := range names {
+				p := filepath.Join(dir, name)
+				state := "invalid"
+				if _, err := os.Stat(filepath.Join(p, ".git")); err == nil {
+					if err := pullProfile(cmd, c, p); err != nil {
+						if explicit {
+							return finish(err)
+						}
+						// Like an invalid profile, one unreachable or
+						// diverged profile remote must not stop the
+						// others. Its sources are left alone: the
+						// manifest that names them may be stale.
+						fmt.Fprintf(errOut, "%s: pull failed: %v\n", name, err)
+						unpulled = append(unpulled, name)
+						continue
+					}
+					fmt.Fprintf(out, "%s: pulled\n", name)
+					state = "invalid after update"
+				} else {
+					// Hand-authored local profiles (and --into wrappers) are
+					// first-class; only git clones have somewhere to pull
+					// from, but their sources still sync.
+					fmt.Fprintf(out, "%s: not a git clone, sources only\n", name)
+				}
+				// skip reports an invalid profile: fatal when it was named,
+				// collected otherwise.
+				skip := func(err error) error {
+					if explicit {
+						return finish(fmt.Errorf("profile %s is %s: %w", name, state, err))
+					}
+					fmt.Fprintf(errOut, "%s: %s: %v\n", name, state, err)
+					invalid = append(invalid, name)
+					return nil
+				}
+				// The manifest just pulled decides which checkouts exist:
+				// prune what it no longer declares before syncing the rest.
+				manifest, err := profile.LoadManifest(dir, name)
+				if err != nil {
+					if err := skip(err); err != nil {
+						return err
+					}
+					continue
+				}
+				pruned, err := profile.PruneSources(dir, manifest)
+				for _, s := range pruned {
+					fmt.Fprintf(out, "%s: pruned source %s\n", name, s)
+				}
+				if err != nil {
+					return finish(fmt.Errorf("profile %s: prune sources: %w", name, err))
+				}
+				fails = append(fails, syncSources(cmd.Context(), c, dir, manifest, out)...)
 				if _, err := profile.Load(dir, name); err != nil {
-					return fmt.Errorf("profile %s is invalid after update: %w", name, err)
+					if err := skip(err); err != nil {
+						return err
+					}
+					continue
 				}
 				fmt.Fprintf(out, "%s: updated\n", name)
 			}
-			return nil
+			return finish(nil)
 		},
 	}
 }
@@ -238,7 +536,12 @@ func newProfileListCmd() *cobra.Command {
 					state = "active"
 				}
 				desc := ""
-				if p, err := profile.Load(dir, name); err != nil {
+				// Load, not just LoadManifest: it also resolves each source's
+				// commit for the lines below. It never touches the network,
+				// and an unfetched or unresolvable source is reported on its
+				// own line rather than making the whole profile invalid.
+				p, err := profile.Load(dir, name)
+				if err != nil {
 					state = "invalid"
 					desc = err.Error()
 				} else {
@@ -256,6 +559,18 @@ func newProfileListCmd() *cobra.Command {
 				}
 				origin := gitOrigin(filepath.Join(dir, name))
 				fmt.Fprintf(out, "%-24s %-8s %-40s %s\n", name, state, origin, desc)
+				for _, s := range p.Sources {
+					ref, commit := s.Ref, s.Unavailable
+					if ref == "" {
+						ref = "default"
+					}
+					if commit == "" {
+						commit = s.Commit[:12]
+					} else {
+						commit = "unavailable: " + commit
+					}
+					fmt.Fprintf(out, "    source %-24s ~/%s  %s  %s\n", s.Name, s.Into, ref, commit)
+				}
 			}
 			return nil
 		},
@@ -293,6 +608,11 @@ func newProfileRemoveCmd() *cobra.Command {
 			if err := os.RemoveAll(target); err != nil {
 				return err
 			}
+			// The checkouts belong to the profile; left behind they would be
+			// picked up by a later, unrelated profile of the same name.
+			if err := os.RemoveAll(filepath.Join(profile.SourcesDir(dir), name)); err != nil {
+				return err
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Removed profile %s.\n", name)
 			return nil
 		},
@@ -304,13 +624,15 @@ func newProfileApplyCmd() *cobra.Command {
 		Use:   "apply",
 		Short: "Push the active profiles into the running VM and apply them",
 		Long: "Push the profiles listed in the config into the running VM and apply\n" +
-			"them: install files into the agent's home, install packages, set the\n" +
-			"shell and run hooks. The same application also happens automatically on\n" +
-			"every boot; this command exists so profile changes do not need a restart.",
+			"them: install sources and files into the agent's home, install packages,\n" +
+			"set the shell and run hooks. Sources install from the checkouts that\n" +
+			"`profile add` and `profile update` fetched; nothing is fetched here. The\n" +
+			"same application also happens automatically on every boot; this command\n" +
+			"exists so profile changes do not need a restart.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			c, profiles, cfgPath, err := loadConfigWithProfiles()
+			c, profiles, cfgPath, err := loadConfigWithProfiles(cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
