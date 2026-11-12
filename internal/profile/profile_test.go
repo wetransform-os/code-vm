@@ -487,3 +487,159 @@ func TestLoadRejectsSymlinkedTemplatesRoot(t *testing.T) {
 		t.Errorf("Load error = %v, want symlink rejection", err)
 	}
 }
+
+func TestLoadManifestParsesSources(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "team", `
+description: team
+sources:
+  - repo: https://example.invalid/jira-tickets
+    into: ./.claude/skills/jira-ticket/
+    ref: main
+  - repo: git@example.invalid:x/y.git
+    into: tools/y
+`, nil)
+	p, err := LoadManifest(dir, "team")
+	if err != nil {
+		t.Fatalf("LoadManifest: %v", err)
+	}
+	if len(p.Sources) != 2 {
+		t.Fatalf("Sources = %d, want 2", len(p.Sources))
+	}
+	s := p.Sources[0]
+	if s.Name != "jira-ticket" || s.Into != ".claude/skills/jira-ticket" || s.Ref != "main" || s.Repo != "https://example.invalid/jira-tickets" {
+		t.Errorf("source[0] = %+v", s)
+	}
+	if p.Sources[1].Ref != "" || p.Sources[1].Name != "y" {
+		t.Errorf("source[1] = %+v", p.Sources[1])
+	}
+	if s.Commit != "" || s.Archive != nil || s.Unavailable != "" {
+		t.Error("LoadManifest must not resolve or archive")
+	}
+}
+
+func TestLoadManifestSanitisesSourceNames(t *testing.T) {
+	long := strings.Repeat("a", 60) + "_bbbbbb"
+	for into, want := range map[string]string{
+		".claude/skills/jira_tickets": "jira-tickets",
+		".oh-my-zsh":                  "oh-my-zsh",
+		".vim":                        "vim",
+		"tools/x.y.z":                 "x-y-z",
+		"tools/a._-b":                 "a-b",
+		"tools/" + long:               strings.Repeat("a", 60) + "-bb",
+		"tools/" + strings.Repeat("a", 62) + "_b": strings.Repeat("a", 62),
+	} {
+		dir := t.TempDir()
+		writeProfile(t, dir, "p", "sources:\n  - {repo: u, into: "+into+"}\n", nil)
+		p, err := LoadManifest(dir, "p")
+		if err != nil {
+			t.Errorf("into %s: %v", into, err)
+			continue
+		}
+		if got := p.Sources[0].Name; got != want {
+			t.Errorf("into %s: Name = %q, want %q", into, got, want)
+		}
+	}
+}
+
+func TestLoadManifestSourcesOnlyProfileIsNotEmpty(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "s", "sources:\n  - repo: https://example.invalid/r\n    into: x\n", nil)
+	if _, err := LoadManifest(dir, "s"); err != nil {
+		t.Fatalf("sources-only profile must load: %v", err)
+	}
+}
+
+func TestLoadManifestRejectsBadSources(t *testing.T) {
+	cases := map[string]struct {
+		manifest string
+		files    map[string]string
+		want     string
+	}{
+		"into dot":             {"sources:\n  - {repo: u, into: .}\n", nil, "into"},
+		"into empty":           {"sources:\n  - {repo: u, into: \"\"}\n", nil, "into"},
+		"into dotdot":          {"sources:\n  - {repo: u, into: ../x}\n", nil, "agent home"},
+		"into absolute":        {"sources:\n  - {repo: u, into: /x}\n", nil, "into"},
+		"into claude dir":      {"sources:\n  - {repo: u, into: .claude}\n", nil, "locked Claude settings"},
+		"into settings":        {"sources:\n  - {repo: u, into: .claude/settings.json}\n", nil, "locked Claude settings"},
+		"repo empty":           {"sources:\n  - {repo: \"\", into: x}\n", nil, "repo"},
+		"repo dash":            {"sources:\n  - {repo: --upload-pack=x, into: x}\n", nil, "repo"},
+		"ref dash":             {"sources:\n  - {repo: u, into: x, ref: -x}\n", nil, "ref"},
+		"ref dotdot":           {"sources:\n  - {repo: u, into: x, ref: a..b}\n", nil, "ref"},
+		"ref space":            {"sources:\n  - {repo: u, into: x, ref: \"a b\"}\n", nil, "ref"},
+		"duplicate name":       {"sources:\n  - {repo: u, into: a/x}\n  - {repo: v, into: b/x}\n", nil, `into "a/x" and sources[1]: into "b/x" both give the source name "x"; choose a different directory name`},
+		"duplicate sanitised":  {"sources:\n  - {repo: u, into: tools/a_b}\n  - {repo: v, into: tools/a-b}\n", nil, `into "tools/a_b" and sources[1]: into "tools/a-b" both give the source name "a-b"`},
+		"name empty":           {"sources:\n  - {repo: u, into: tools/...}\n", nil, `leaves no source name`},
+		"nested own source":    {"sources:\n  - {repo: u, into: a}\n  - {repo: v, into: a/b}\n", nil, "inside"},
+		"own file under":       {"sources:\n  - {repo: u, into: a}\n", map[string]string{"files/a/f": "x\n"}, "inside"},
+		"own template under":   {"sources:\n  - {repo: u, into: a}\n", map[string]string{"templates/a/f": "x\n"}, "inside"},
+		"own file at ancestor": {"sources:\n  - {repo: u, into: a/b}\n", map[string]string{"files/a": "x\n"}, "ancestor"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeProfile(t, dir, "p", tc.manifest, tc.files)
+			_, err := LoadManifest(dir, "p")
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// loadAllBothOrders runs LoadAll over two profiles in both orders and returns
+// the two errors (nil when accepted).
+func loadAllBothOrders(dir string) (error, error) {
+	_, e1 := LoadAll(dir, []string{"p1", "p2"})
+	_, e2 := LoadAll(dir, []string{"p2", "p1"})
+	return e1, e2
+}
+
+func TestLoadAllRejectsFileUnderOtherProfilesSource(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "p1", "description: p1\n", map[string]string{"files/a/x": "x\n"})
+	writeProfile(t, dir, "p2", "sources:\n  - {repo: u, into: a}\n", nil)
+	e1, e2 := loadAllBothOrders(dir)
+	for _, err := range []error{e1, e2} {
+		if err == nil || !strings.Contains(err.Error(), "inside source a") ||
+			!strings.Contains(err.Error(), "p1") || !strings.Contains(err.Error(), "p2") {
+			t.Fatalf("err = %v, want collision naming both profiles", err)
+		}
+	}
+}
+
+func TestLoadAllRejectsFileAtAncestorOfOtherProfilesSource(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "p1", "description: p1\n", map[string]string{"files/a": "x\n"})
+	writeProfile(t, dir, "p2", "sources:\n  - {repo: u, into: a/b}\n", nil)
+	e1, e2 := loadAllBothOrders(dir)
+	for _, err := range []error{e1, e2} {
+		if err == nil || !strings.Contains(err.Error(), "ancestor of source a/b") ||
+			!strings.Contains(err.Error(), "p1") || !strings.Contains(err.Error(), "p2") {
+			t.Fatalf("err = %v, want ancestor collision naming both profiles", err)
+		}
+	}
+}
+
+func TestLoadAllRejectsOverlappingSources(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "p1", "sources:\n  - {repo: u, into: a}\n", nil)
+	writeProfile(t, dir, "p2", "sources:\n  - {repo: v, into: a/b}\n", nil)
+	e1, e2 := loadAllBothOrders(dir)
+	for _, err := range []error{e1, e2} {
+		if err == nil || !strings.Contains(err.Error(), "overlap") ||
+			!strings.Contains(err.Error(), "p1") || !strings.Contains(err.Error(), "p2") {
+			t.Fatalf("err = %v, want overlap naming both profiles", err)
+		}
+	}
+}
+
+func TestLoadAllAllowsDisjointSources(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "p1", "sources:\n  - {repo: u, into: a}\n", map[string]string{"files/ab.txt": "x\n"})
+	writeProfile(t, dir, "p2", "sources:\n  - {repo: v, into: ab}\n", nil)
+	e1, e2 := loadAllBothOrders(dir)
+	if e1 != nil || e2 != nil {
+		t.Fatalf("disjoint sources must load: %v, %v", e1, e2)
+	}
+}

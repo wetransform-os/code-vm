@@ -1,6 +1,8 @@
 package profile
 
 import (
+	"bytes"
+	"encoding/base64"
 	"reflect"
 	"strings"
 	"testing"
@@ -26,6 +28,10 @@ func fixtureProfiles() []Profile {
 			Name:     "wetf-claude",
 			Manifest: Manifest{Packages: []string{"git"}},
 			Files:    []File{{Rel: ".claude/CLAUDE.md", Content: []byte("# rules\n")}},
+			Sources: []Source{
+				{Name: "jira-ticket", Into: ".claude/skills/jira-ticket", Archive: []byte("fake-archive-bytes")},
+				{Name: "gone", Into: "x/gone", Unavailable: "never fetched"},
+			},
 		},
 	}
 }
@@ -46,6 +52,7 @@ func TestGuestFilesLayout(t *testing.T) {
 		`PROFILE_SHELL="/usr/bin/fish"`,
 		`PROFILE_HOOKS="fish-shell"`,
 		`PROFILE_FILES="fish-shell wetf-claude"`,
+		`PROFILE_SOURCES="wetf-claude"`,
 	} {
 		if !strings.Contains(manifest, want) {
 			t.Errorf("manifest.env missing %q, got:\n%s", want, manifest)
@@ -69,6 +76,71 @@ func TestGuestFilesLayout(t *testing.T) {
 	}
 	if _, ok := byPath[GuestRoot+"/wetf-claude/hook"]; ok {
 		t.Error("a profile without a hook must not render one")
+	}
+
+	if got := byPath[GuestRoot+"/wetf-claude/sources.list"]; got != "jira-ticket .claude/skills/jira-ticket\n" {
+		t.Errorf("sources.list = %q", got)
+	}
+	if perms[GuestRoot+"/wetf-claude/sources.list"] != "0444" {
+		t.Error("sources.list must be delivered 0444")
+	}
+	b64 := GuestRoot + "/wetf-claude/sources/jira-ticket.tar.gz.b64"
+	if perms[b64] != "0444" {
+		t.Errorf("source archive perm = %q, want 0444", perms[b64])
+	}
+	if want := wrap76(base64.StdEncoding.EncodeToString([]byte("fake-archive-bytes"))); byPath[b64] != want {
+		t.Errorf("archive content = %q, want %q", byPath[b64], want)
+	}
+	if _, ok := byPath[GuestRoot+"/wetf-claude/sources/gone.tar.gz.b64"]; ok {
+		t.Error("an unavailable source must render nothing")
+	}
+	if _, ok := byPath[GuestRoot+"/fish-shell/sources.list"]; ok {
+		t.Error("a profile without sources must not render sources.list")
+	}
+}
+
+func TestGuestFilesWrapsArchiveAt76Columns(t *testing.T) {
+	big := make([]byte, 200)
+	for i := range big {
+		big[i] = byte(i)
+	}
+	files := GuestFiles([]Profile{{Name: "p", Sources: []Source{{Name: "s", Into: "d", Archive: big}}}})
+	var content string
+	for _, f := range files {
+		if f.Path == GuestRoot+"/p/sources/s.tar.gz.b64" {
+			content = f.Content
+		}
+	}
+	if !strings.HasSuffix(content, "\n") {
+		t.Fatal("base64 content must end with a newline")
+	}
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected wrapping, got %d line(s)", len(lines))
+	}
+	for i, l := range lines {
+		if len(l) > 76 || (i < len(lines)-1 && len(l) != 76) {
+			t.Errorf("line %d has %d columns", i, len(l))
+		}
+	}
+	dec, err := base64.StdEncoding.DecodeString(strings.Join(lines, ""))
+	if err != nil || !bytes.Equal(dec, big) {
+		t.Errorf("round trip failed: %v", err)
+	}
+}
+
+func TestGuestFilesOmitsSourcesWhenAllUnavailable(t *testing.T) {
+	files := GuestFiles([]Profile{{
+		Name:    "p",
+		Sources: []Source{{Name: "a", Into: "x/a", Unavailable: "offline"}},
+	}})
+	for _, f := range files {
+		if strings.Contains(f.Path, "/sources") {
+			t.Errorf("unexpected sources file %s", f.Path)
+		}
+		if f.Path == ManifestPath && !strings.Contains(f.Content, `PROFILE_SOURCES=""`) {
+			t.Errorf("manifest must have empty PROFILE_SOURCES, got:\n%s", f.Content)
+		}
 	}
 }
 

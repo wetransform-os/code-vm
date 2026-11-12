@@ -125,6 +125,7 @@ provision:
     PROFILE_SHELL="/usr/bin/fish"
     PROFILE_HOOKS="fixture"
     PROFILE_FILES="fixture"
+    PROFILE_SOURCES="fixture"
 - mode: data
   path: "/usr/local/share/sandbox-profiles/fixture/files/.claude/CLAUDE.md"
   owner: "root:root"
@@ -173,6 +174,54 @@ provision:
   # byte-exact, so the two delivery paths would otherwise diverge.
   content: |2
     .claude/CLAUDE.md
+- mode: data
+  path: "/usr/local/share/sandbox-profiles/fixture/sources/skill.tar.gz.b64"
+  owner: "root:root"
+  permissions: "0444"
+  overwrite: true
+  # Explicit indentation indicator "2" (not auto-detected): otherwise YAML
+  # derives the block's indentation from its first non-empty line, so content
+  # starting with its own leading space or tab (a patch file, some Markdown)
+  # would shift that detection and corrupt the document. "2" is relative to
+  # this key's own mapping indentation (2, see "path:" above), landing on
+  # column 4 — exactly what `indent 4` below always produces. escapeData
+  # (guestBlockContent in template.go) additionally guards a leading tab
+  # specifically: see its comment for the limactl-side bug that survives even
+  # this indicator.
+  #
+  # The chomping indicator after "2" is dynamic (see chomp in template.go):
+  # "-" (strip) for content with no trailing newline, "" (clip, the default)
+  # for exactly one, "+" (keep) for more than one — paired with indent
+  # reproducing the extra ones as trailing blank lines. Without this, every
+  # embedded file was forced through exactly one trailing newline regardless
+  # of its own, which the staged-copy path (`profile apply`) reproduces
+  # byte-exact, so the two delivery paths would otherwise diverge.
+  content: |2
+    Z29sZGVuLWFyY2hpdmU=
+- mode: data
+  path: "/usr/local/share/sandbox-profiles/fixture/sources.list"
+  owner: "root:root"
+  permissions: "0444"
+  overwrite: true
+  # Explicit indentation indicator "2" (not auto-detected): otherwise YAML
+  # derives the block's indentation from its first non-empty line, so content
+  # starting with its own leading space or tab (a patch file, some Markdown)
+  # would shift that detection and corrupt the document. "2" is relative to
+  # this key's own mapping indentation (2, see "path:" above), landing on
+  # column 4 — exactly what `indent 4` below always produces. escapeData
+  # (guestBlockContent in template.go) additionally guards a leading tab
+  # specifically: see its comment for the limactl-side bug that survives even
+  # this indicator.
+  #
+  # The chomping indicator after "2" is dynamic (see chomp in template.go):
+  # "-" (strip) for content with no trailing newline, "" (clip, the default)
+  # for exactly one, "+" (keep) for more than one — paired with indent
+  # reproducing the extra ones as trailing blank lines. Without this, every
+  # embedded file was forced through exactly one trailing newline regardless
+  # of its own, which the staged-copy path (`profile apply`) reproduces
+  # byte-exact, so the two delivery paths would otherwise diverge.
+  content: |2
+    skill .claude/skills/skill
 - mode: data
   path: "/usr/local/share/sandbox-profiles/fixture/hook"
   owner: "root:root"
