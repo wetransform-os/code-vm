@@ -662,6 +662,7 @@ func TestLocalRepoPath(t *testing.T) {
 		"ssh://git@host/o/r.git":     "",
 		"file:x/r.git":               "",
 		"file:///srv/r.git":          "/srv/r.git",
+		"file://localhost/srv/r.git": "/srv/r.git",
 		"file:///home/u/pro%6aects":  "/home/u/projects",
 		"/abs/r":                     "/abs/r",
 		"./rel":                      "./rel",
@@ -675,6 +676,13 @@ func TestLocalRepoPath(t *testing.T) {
 	}
 	if _, ok, err := LocalRepoPath("file:///x/%zz"); !ok || err == nil {
 		t.Errorf("an undecodable file URL must be local and an error, got %v, %v", ok, err)
+	}
+	// git would open /srv/r.git for either of these, ignoring the host; a
+	// host that is not plainly this machine must be refused, not resolved.
+	for _, repo := range []string{"file://evil.example/srv/r.git", "file://localhost"} {
+		if _, ok, err := LocalRepoPath(repo); !ok || err == nil {
+			t.Errorf("LocalRepoPath(%q) must be local and an error, got %v, %v", repo, ok, err)
+		}
 	}
 }
 
