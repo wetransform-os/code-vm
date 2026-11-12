@@ -762,6 +762,28 @@ printf 'secrets:\n  test-token:\n    value: sekrit-value\n' > "$TEST_CONFIG_DIR/
 chmod 0600 "$TEST_CONFIG_DIR/secrets.yaml"
 yq -i '.vars = {"test-url": "https://fixture.example"}' "$CONFIG_FILE"
 
+# A source: a local git repository the fixture installs whole at
+# .claude/skills/fixture. Its checkout lands under $TEST_CONFIG_DIR/sources/,
+# removed with the rest of the scratch config.
+SRC="$TEST_CONFIG_DIR/fixture-src"
+SRC_DST="/home/$AGENT_USER/.claude/skills/fixture"
+src_git() { git -C "$SRC" -c user.email=t@t -c user.name=t -c commit.gpgsign=false "$@"; }
+mkdir -p "$SRC/bin"
+echo "# fixture skill" > "$SRC/SKILL.md"
+printf '#!/bin/sh\necho run\n' > "$SRC/bin/run"
+chmod +x "$SRC/bin/run"
+git init -q "$SRC"
+src_git add -A
+src_git commit -q -m init
+src_git branch -M main
+yq -i '.sources = [{"repo": "'"$SRC"'", "into": ".claude/skills/fixture"}]' "$PROFILE_FIXTURE/profile.yaml"
+assert_ok "profile update fetches a declared source" \
+    "${CODE_VM_ARGS[@]}" profile update test-profile
+# Planted by the agent: the wipe before extraction must remove the link, not
+# follow it into /etc.
+# shellcheck disable=SC2016 # $HOME expands guest-side
+agent bash -c 'mkdir -p "$HOME/.claude/skills" && ln -sfn /etc "$HOME/.claude/skills/fixture"' > /dev/null 2>&1
+
 if "${CODE_VM_ARGS[@]}" profile apply > /dev/null 2>&1; then
     pass "profile apply succeeds"
 else
@@ -829,6 +851,52 @@ else
     fail "rendered template is agent-owned 0600 (got $(adm stat -c '%u %a' "$RENDERED"))"
 fi
 
+assert_ok "source tree lands at its destination" adm test -f "$SRC_DST/SKILL.md"
+assert_ok "source executable bit survives" adm test -x "$SRC_DST/bin/run"
+assert_ok "a planted symlink at the source destination was not followed" adm test -f /etc/passwd
+assert_fails "the planted symlink was replaced by a directory" adm test -L "$SRC_DST"
+if [ "$(adm stat -c '%u' "$SRC_DST/SKILL.md")" = "$(id -u)" ]; then
+    pass "source files are agent-owned"
+else
+    fail "source files are agent-owned (got $(adm stat -c '%u' "$SRC_DST/SKILL.md"))"
+fi
+
+# The destination is canonical: upstream removals and local strays both go.
+src_git rm -q bin/run
+src_git commit -q -m 'drop run'
+assert_ok "profile update picks up a new upstream commit" \
+    "${CODE_VM_ARGS[@]}" profile update test-profile
+"${CODE_VM_ARGS[@]}" profile apply > /dev/null 2>&1
+assert_fails "upstream removal propagates" adm test -e "$SRC_DST/bin/run"
+agent touch "$SRC_DST/stray" > /dev/null 2>&1
+"${CODE_VM_ARGS[@]}" profile apply > /dev/null 2>&1
+assert_fails "stray files in a source directory are wiped" adm test -e "$SRC_DST/stray"
+
+# An unreachable repository fails the update but keeps the old checkout, so
+# the VM is not blocked.
+yq -i '.sources[0].repo = "'"$TEST_CONFIG_DIR"'/does-not-exist"' "$PROFILE_FIXTURE/profile.yaml"
+assert_fails "profile update fails for an unreachable source repository" \
+    "${CODE_VM_ARGS[@]}" profile update test-profile
+assert_ok "profile apply still succeeds after a failed source fetch" \
+    "${CODE_VM_ARGS[@]}" profile apply
+assert_ok "the previous source checkout still installs" adm test -f "$SRC_DST/SKILL.md"
+
+# A ref that does not resolve makes the source unavailable: a warning, the
+# rest of the profile applies, and the installed tree is left alone.
+yq -i '.sources[0].ref = "no-such-branch"' "$PROFILE_FIXTURE/profile.yaml"
+UNAVAIL_OUT=$("${CODE_VM_ARGS[@]}" profile apply 2>&1 > /dev/null); UNAVAIL_RC=$?
+if [ "$UNAVAIL_RC" -eq 0 ] && echo "$UNAVAIL_OUT" | grep -q 'source fixture unavailable'; then
+    pass "an unavailable source warns and apply still succeeds"
+else
+    fail "an unavailable source warns and apply still succeeds (rc=$UNAVAIL_RC, got: $UNAVAIL_OUT)"
+fi
+assert_ok "an unavailable source leaves the installed tree alone" adm test -f "$SRC_DST/SKILL.md"
+if "${CODE_VM_ARGS[@]}" profile list 2> /dev/null | grep -q 'unavailable: '; then
+    pass "profile list shows the unavailable source"
+else
+    fail "profile list shows the unavailable source"
+fi
+
 # Rotation: change the mapped value, re-apply, and the rendered file updates.
 printf 'secrets:\n  test-token:\n    value: rotated-value\n' > "$TEST_CONFIG_DIR/secrets.yaml"
 "${CODE_VM_ARGS[@]}" profile apply > /dev/null 2>&1
@@ -863,6 +931,7 @@ assert_fails "deactivated profile's domain is revoked" \
     agent curl -fsS -o /dev/null --max-time 20 https://example.org
 adm rm -f "/home/$AGENT_USER/.profile-hook-ran" > /dev/null 2>&1
 adm rm -f "$RENDERED" > /dev/null 2>&1  # cleanup with the other fixture artifacts
+adm rm -rf "$SRC_DST" > /dev/null 2>&1   # deactivation leaves source trees too
 rm -rf "$TEST_CONFIG_DIR/profiles"
 
 echo ""
