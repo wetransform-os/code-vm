@@ -124,10 +124,13 @@ different directory name.
   not a load error: the profile loads, the source is skipped, and a warning
   names the source, the reason and the fix (`run code-vm profile update
   <profile>`). See "Unavailable sources" below.
-- The archive must be non-empty (an empty repository is an error) and at
-  most 8 MiB compressed. The cap is my call; it exists because the archive
-  is embedded in the Lima template on every start and in the cidata image.
-  The error message states the cap so a builder can tune it.
+- The archive must be non-empty (an empty repository is an error), at
+  most 8 MiB compressed and at most 64 MiB uncompressed. The compressed cap
+  exists because the archive is embedded in the Lima template on every
+  start and in the cidata image; the uncompressed cap bounds what the guest
+  expands onto its disk after wiping the destination, since gzip can shrink
+  a repetitive blob a thousandfold. Both caps are my call, and each error
+  message states its cap so a builder can tune it.
 - Archive entries are checked against the forbidden files after prefixing
   `into/`; a source may not smuggle the locked settings in under a
   permitted destination either.
@@ -168,7 +171,11 @@ the whole class of host-side symlink and ignored-file concerns the
 
 **Sync** (shared by `add` and `update`), per source:
 
-1. Clone bare if missing.
+1. Clone bare if missing. If the checkout exists but its origin differs
+   from the manifest's `repo`, clone the new repository beside it and swap
+   it in only once the clone succeeded: re-pointing the old checkout would
+   keep its objects, and a commit pinned from the previous repository would
+   go on resolving as if the new one contained it.
 2. `git fetch origin` with `+refs/heads/*:refs/heads/*` and tags, pruning.
    For a `ref` that looks like a full commit hash and is not yet present,
    additionally `git fetch origin <sha>`.

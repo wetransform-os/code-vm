@@ -22,6 +22,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -175,6 +177,33 @@ func resolveCommit(dir, ref string) (string, error) {
 // errOverCap marks an archive whose compressed size passed MaxArchiveBytes.
 var errOverCap = fmt.Errorf("source archive is over the %d byte compressed cap", MaxArchiveBytes)
 
+// MaxArchiveRawBytes caps what the guest will expand: gzip can shrink a
+// repetitive blob a thousandfold, so the compressed cap alone would let a
+// tree of a few gigabytes through to fill the VM's disk after the
+// destination was wiped.
+const MaxArchiveRawBytes = 64 << 20
+
+// errOverRawCap marks an archive whose uncompressed tar stream passed
+// MaxArchiveRawBytes.
+var errOverRawCap = fmt.Errorf("source tree is over the %d byte uncompressed cap", MaxArchiveRawBytes)
+
+// cappedReader fails with errOverRawCap once more than max bytes have been
+// read through it.
+type cappedReader struct {
+	r    io.Reader
+	max  int
+	read int
+}
+
+func (c *cappedReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.read += n
+	if c.read > c.max {
+		return n, errOverRawCap
+	}
+	return n, err
+}
+
 // capBuffer is a bytes.Buffer that refuses to grow past max.
 type capBuffer struct {
 	bytes.Buffer
@@ -210,7 +239,7 @@ func archive(dir, commit string) ([]byte, []string, error) {
 	}
 	gz := &capBuffer{max: MaxArchiveBytes}
 	zw := gzip.NewWriter(gz)
-	raw := io.TeeReader(stdout, zw)
+	raw := io.TeeReader(&cappedReader{r: stdout, max: MaxArchiveRawBytes}, zw)
 	names, readErr := tarNames(raw)
 	if readErr == nil {
 		// The tar reader stops at the end-of-archive marker; the padding
@@ -226,6 +255,8 @@ func archive(dir, commit string) ([]byte, []string, error) {
 	switch {
 	case gz.over:
 		return nil, nil, errOverCap
+	case errors.Is(readErr, errOverRawCap):
+		return nil, nil, errOverRawCap
 	case readErr == nil && waitErr != nil:
 		return nil, nil, fmt.Errorf("git archive: %w: %s", waitErr, strings.TrimSpace(stderr.String()))
 	case readErr != nil:
@@ -430,6 +461,76 @@ const pinRefs = "refs/code-vm/pinned/"
 // refspecs fetched, can never reach pinRefs.
 var sourceRefspecs = []string{"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"}
 
+// cloneCheckout creates the bare checkout for repo at dir, leaving nothing
+// behind on failure (a partial clone would later pass for a checkout).
+func cloneCheckout(ctx context.Context, repo, dir string) error {
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return err
+	}
+	// "--" ends option parsing; repos are also validated not to start with
+	// "-".
+	// --bare rather than --mirror: it takes branches and tags only, as later
+	// fetches do. --no-local: a clone from a local path would otherwise copy
+	// that repository's objects directory as is, objects/info/alternates
+	// included, leaving the checkout reading objects from wherever the
+	// source pointed it; the transport packs the objects instead.
+	// --no-hardlinks keeps the same guarantee should the transport ever be
+	// bypassed. --origin: the clone keeps the user's config, whose
+	// clone.defaultRemoteName would otherwise rename the remote every later
+	// sync addresses as origin.
+	cmd := exec.CommandContext(ctx, "git", "clone", "--bare", "--no-local", "--no-hardlinks", "--origin", "origin", "--quiet", "--", repo, dir)
+	cmd.Env = gitEnviron()
+	// See gitNetCmd: never resolve the repo against the process's working
+	// directory.
+	cmd.Dir = filepath.Dir(dir)
+	if err := runGit(cmd, "git clone"); err != nil {
+		_ = os.RemoveAll(dir)
+		return err
+	}
+	return nil
+}
+
+// originOf returns the checkout's origin URL, or "" when it has none.
+func originOf(dir string) string {
+	out, err := gitOutput(gitCmd(dir, "remote", "get-url", "origin"), "git remote get-url")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// replaceCheckout clones repo into a sibling of dir and swaps it in,
+// removing the previous checkout only after the new one is in place. Stale
+// siblings from an interrupted earlier swap are swept first.
+func replaceCheckout(ctx context.Context, repo, dir string) error {
+	for _, pattern := range []string{dir + ".new-*", dir + ".old-*"} {
+		stale, _ := filepath.Glob(pattern)
+		for _, p := range stale {
+			_ = os.RemoveAll(p)
+		}
+	}
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Errorf("generate checkout name: %w", err)
+	}
+	suffix := hex.EncodeToString(b[:])
+	fresh, old := dir+".new-"+suffix, dir+".old-"+suffix
+	if err := cloneCheckout(ctx, repo, fresh); err != nil {
+		return err
+	}
+	if err := os.Rename(dir, old); err != nil {
+		_ = os.RemoveAll(fresh)
+		return err
+	}
+	if err := os.Rename(fresh, dir); err != nil {
+		// Put the previous checkout back; nothing is lost either way.
+		_ = os.Rename(old, dir)
+		_ = os.RemoveAll(fresh)
+		return err
+	}
+	return os.RemoveAll(old)
+}
+
 // syncSource brings the checkout at dir up to date with s.Repo and resolves
 // s.Ref in it. The fetch moves every branch and tag and drops deleted ones:
 // a branch or tag ref tracks the remote, a commit id stays pinned.
@@ -438,44 +539,31 @@ func syncSource(ctx context.Context, dir string, s Source) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !repo {
+	switch {
+	case !repo:
 		// Never fetched, or the remains of a clone killed before git wrote
 		// HEAD: no fetched objects to protect, so start over.
 		if err := os.RemoveAll(dir); err != nil {
 			return "", err
 		}
-		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		if err := cloneCheckout(ctx, s.Repo, dir); err != nil {
 			return "", err
 		}
-		// "--" ends option parsing; repos are also validated not to start
-		// with "-".
-		// --bare rather than --mirror: it takes branches and tags only, as
-		// later fetches do. --no-local: a clone from a local path would
-		// otherwise copy that repository's objects directory as is,
-		// objects/info/alternates included, leaving the checkout reading
-		// objects from wherever the source pointed it; the transport packs
-		// the objects instead. --no-hardlinks keeps the same guarantee
-		// should the transport ever be bypassed. --origin: the clone keeps
-		// the user's config, whose clone.defaultRemoteName would otherwise
-		// rename the remote every later sync addresses as origin.
-		cmd := exec.CommandContext(ctx, "git", "clone", "--bare", "--no-local", "--no-hardlinks", "--origin", "origin", "--quiet", "--", s.Repo, dir)
-		cmd.Env = gitEnviron()
-		// See gitNetCmd: never resolve the repo against the process's
-		// working directory.
-		cmd.Dir = filepath.Dir(dir)
-		if err := runGit(cmd, "git clone"); err != nil {
-			// A partial clone would later pass for a checkout; leave none.
-			_ = os.RemoveAll(dir)
+	case originOf(dir) != s.Repo:
+		// The manifest now names a different repository. Re-pointing the
+		// old checkout would keep its objects, and a pinned commit from the
+		// previous repository would go on resolving — and installing — as
+		// if the new one contained it. Clone the new repository beside the
+		// old checkout and swap it in only once the clone succeeded, so a
+		// failed clone still leaves the last good checkout in place.
+		if err := replaceCheckout(ctx, s.Repo, dir); err != nil {
 			return "", err
 		}
-	} else {
-		// A failed set-url or fetch returns before anything else touches
-		// the checkout: just as Load never fetches (nothing moves on
-		// start), a failed sync never discards, so the last good objects
-		// keep resolving.
-		if err := runGit(gitNetCmd(ctx, dir, "remote", "set-url", "origin", s.Repo), "git remote set-url"); err != nil {
-			return "", err
-		}
+	default:
+		// A failed fetch returns before anything else touches the
+		// checkout: just as Load never fetches (nothing moves on start), a
+		// failed sync never discards, so the last good objects keep
+		// resolving.
 		fetch := gitNetCmd(ctx, dir, append([]string{"fetch", "--prune", "--quiet", "origin"}, sourceRefspecs...)...)
 		if err := runGit(fetch, "git fetch"); err != nil {
 			return "", err
