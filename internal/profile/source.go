@@ -150,13 +150,21 @@ func environWithout(drop func(string) bool) []string {
 }
 
 // resolveCommit resolves ref to a full commit id in the checkout at dir. An
-// empty ref means the checkout's HEAD, i.e. the remote's default branch.
-// Branches are tried before tags, then ref as a bare object name; the error
-// wraps errRefNotFound when none resolves.
+// empty ref means the checkout's HEAD, i.e. the remote's default branch. A
+// full commit id is looked up only as an object, never as a ref name, and
+// a name is tried as a tag before a branch: the order fails safe, since
+// the repository owner could otherwise shadow a pinned commit with a branch
+// named like its hash, or a tag with a same-named branch, and turn a source
+// that was meant to stay put into one that tracks. The error wraps
+// errRefNotFound when nothing resolves.
 func resolveCommit(dir, ref string) (string, error) {
 	candidates := []string{"HEAD"}
-	if ref != "" {
-		candidates = []string{"refs/heads/" + ref, "refs/tags/" + ref, ref}
+	switch {
+	case ref == "":
+	case fullCommitRe.MatchString(ref):
+		candidates = []string{ref}
+	default:
+		candidates = []string{"refs/tags/" + ref, "refs/heads/" + ref}
 	}
 	for _, c := range candidates {
 		out, err := gitCmd(dir, "rev-parse", "--verify", "--quiet", c+"^{commit}").Output()

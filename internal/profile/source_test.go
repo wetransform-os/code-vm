@@ -400,18 +400,27 @@ func TestLoadNeverResolvesParentRepo(t *testing.T) {
 func TestResolveCommitPrecedenceAndAnnotatedTag(t *testing.T) {
 	src := makeSourceRepo(t)
 	first := git(t, src, "rev-parse", "HEAD")
-	// Tag "x" at the first commit, branch "x" at a second one: the branch wins.
+	// Tag "x" at the first commit, branch "x" at a second one: the tag wins,
+	// so a branch named like a tag cannot make a tag-pinned source track.
 	git(t, src, "tag", "x")
 	git(t, src, "commit", "-q", "--allow-empty", "-m", "second")
 	second := git(t, src, "rev-parse", "HEAD")
 	git(t, src, "branch", "x")
+	// A branch and a tag named like the first commit's id, both pointing at
+	// the second commit: a full commit id resolves only as that object.
+	git(t, src, "branch", first)
+	git(t, src, "tag", first)
 	git(t, src, "tag", "-a", "v2", "-m", "annotated")
 	m := filepath.Join(t.TempDir(), "m")
 	mirror(t, src, m)
-	for ref, want := range map[string]string{"x": second, "v1": first, "v2": second} {
+	for ref, want := range map[string]string{"x": first, "v1": first, "v2": second, first: first} {
 		if got, err := resolveCommit(m, ref); err != nil || got != want {
 			t.Errorf("resolveCommit(%q) = %q, %v; want %s", ref, got, err, want)
 		}
+	}
+	// An abbreviated id is not a pin and is not resolved as one.
+	if got, err := resolveCommit(m, second[:12]); !errors.Is(err, errRefNotFound) {
+		t.Errorf("resolveCommit(abbreviated) = %q, %v; want errRefNotFound", got, err)
 	}
 }
 

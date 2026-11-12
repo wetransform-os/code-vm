@@ -454,11 +454,13 @@ code-vm profile add https://github.com/wetransform/jira-tickets --into .claude/s
   names the source, reduced to letters, digits and `-` (`.oh-my-zsh` is
   `oh-my-zsh`, `jira_tickets` is `jira-tickets`); two sources of one
   profile may not reduce to the same name.
-- `ref` is a branch, a tag or a full commit hash, looked up in that order
-  (a branch wins over a tag of the same name; annotated tags resolve to the
-  commit they point at). A branch or tag moves on `code-vm profile update`;
-  a commit stays put until the manifest changes; no `ref` means the
-  remote's default branch. Pin a commit for team
+- `ref` is a full commit hash, a tag or a branch, looked up in that order:
+  a commit hash is never read as a ref name, and a tag wins over a branch
+  of the same name, so the repository owner cannot turn a pinned source
+  into a tracking one by adding a ref named like the pin. Annotated tags
+  resolve to the commit they point at. A branch or tag moves on `code-vm
+  profile update`; a commit stays put until the manifest changes; no `ref`
+  means the remote's default branch. Pin a commit for team
   profiles, so everyone gets the same tree and an upstream push does not
   reach the agent unreviewed.
 - Only `code-vm profile add` and `code-vm profile update` touch the network.
