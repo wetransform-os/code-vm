@@ -653,7 +653,19 @@ func newProfileApplyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// This binary's applier, fetched up front for the same reason:
+			// ApplyProfiles reinstalls it in the guest when it is older.
+			applier, err := embeddedFile(session.ApplierScript)
+			if err != nil {
+				return err
+			}
 			d := agentDeps(cl, c, profiles)
+			// First guest interaction: the boot sequence provisions the very
+			// tree PushProfiles wipes and execs the applier ApplyProfiles
+			// may replace, so nothing below may interleave with it.
+			if err := session.RequireBootComplete(ctx, d); err != nil {
+				return err
+			}
 			if err := session.PushProfiles(ctx, d, profile.GuestFiles(profiles)); err != nil {
 				return fmt.Errorf("push profiles: %w", err)
 			}
@@ -668,7 +680,7 @@ func newProfileApplyCmd() *cobra.Command {
 			if err := pushRendered(ctx, cl, c, profiles, rendered, cmd.OutOrStdout()); err != nil {
 				return err
 			}
-			if err := session.ApplyProfiles(ctx, d); err != nil {
+			if err := session.ApplyProfiles(ctx, d, applier); err != nil {
 				return fmt.Errorf("apply profiles: %w", err)
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "Profiles applied.")

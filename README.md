@@ -404,6 +404,11 @@ Notes:
   package selection, egress domains, and code execution as the agent user.
   Hooks never run as root, and a profile cannot touch the locked
   `.claude/settings.json`.
+- `profile apply` also brings the guest applier up to the running `code-vm`
+  build when it is older, so after upgrading `code-vm` a running VM picks up
+  new profile features on the next apply without a restart. Other guest
+  scripts still only change on the next start, and apply waits for the boot
+  to finish first.
 - List order matters: later profiles win file collisions; the last declared
   shell wins.
 - Profile-shipped files are canonical — re-installed on every boot and every

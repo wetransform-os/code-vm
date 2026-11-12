@@ -2,8 +2,6 @@ package session
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"os"
 )
@@ -23,11 +21,11 @@ const stageDir = "/home/" + adminUser + "/.code-vm-staging"
 // stagedPath returns an unpredictable path inside the staging directory, so a
 // staged file cannot be squatted even by something that knows the scheme.
 func stagedPath() (string, error) {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("generate staging name: %w", err)
+	suffix, err := randomSuffix(16)
+	if err != nil {
+		return "", err
 	}
-	return stageDir + "/stage-" + hex.EncodeToString(b[:]), nil
+	return stageDir + "/stage-" + suffix, nil
 }
 
 // stageFile writes content to a local temp file and copies it into the

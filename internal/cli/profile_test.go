@@ -629,23 +629,27 @@ func TestProfileApplyPushesAndRuns(t *testing.T) {
 	for _, want := range []string{
 		"rm -rf /usr/local/share/sandbox-profiles",
 		"install -d -m 0755 /usr/local/share/sandbox-profiles",
+		// The recording runner answers the hash probe with its status
+		// string, so the applier never matches and is swapped in.
+		"mv -T \"$4\" \"$1\"",
 		"env SANDBOX_PROFILES_STRICT=1 /usr/local/lib/sandbox/apply-profiles.sh",
 	} {
 		if !ranAny(r.calls, want) {
 			t.Errorf("missing guest command %q in %v", want, r.calls)
 		}
 	}
-	// manifest.env + marker + files.list pushed, plus the allowlist fragment:
-	// each travels through one `limactl copy`. Content is staged via host temp
-	// files, so the domain itself is asserted at the session layer, not here.
+	// manifest.env + marker + files.list pushed, plus the allowlist fragment
+	// and the reinstalled applier: each travels through one `limactl copy`.
+	// Content is staged via host temp files, so the domain itself is
+	// asserted at the session layer, not here.
 	copies := 0
 	for _, c := range r.calls {
 		if len(c) > 0 && c[0] == "copy" {
 			copies++
 		}
 	}
-	if copies != 4 {
-		t.Errorf("copies = %d, want 4 (manifest.env, marker, files.list, allowlist fragment)", copies)
+	if copies != 5 {
+		t.Errorf("copies = %d, want 5 (manifest.env, marker, files.list, allowlist fragment, applier)", copies)
 	}
 }
 
@@ -707,6 +711,35 @@ func TestProfileApplyFailsBeforeTouchingGuestOnUnmappedSecret(t *testing.T) {
 		return n
 	}(); copies != 0 {
 		t.Errorf("no file may be staged into the guest before resolution succeeds, copies=%d calls=%v", copies, r.calls)
+	}
+}
+
+// Lima reports Running before sandbox-boot.sh has finished provisioning the
+// profile tree and running the applier; apply must refuse on the missing
+// boot marker before its first guest write, or PushProfiles would wipe the
+// tree the boot is iterating and trip the boot's error trap.
+func TestProfileApplyWaitsForBootBeforeTouchingGuest(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	writeProfile(t, filepath.Join(dir, "profiles"), "p", "domains: [example.net]\n")
+	appendConfig(t, "profiles:\n  - p\n")
+
+	r := installFakeClient(t, "Running")
+	r.failOn = "test -f /run/sandbox-boot-complete"
+	root.SetArgs([]string{"profile", "apply"})
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "not finished booting") {
+		t.Fatalf("expected a boot-in-progress refusal, got %v", err)
+	}
+	for _, unwanted := range []string{
+		"rm -rf /usr/local/share/sandbox-profiles",
+		"squid -k reconfigure",
+		"apply-profiles.sh",
+		"copy",
+	} {
+		if ranAny(r.calls, unwanted) {
+			t.Errorf("guest call %q must not happen while the boot is in progress, calls=%v", unwanted, r.calls)
+		}
 	}
 }
 
