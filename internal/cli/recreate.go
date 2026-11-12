@@ -19,7 +19,7 @@ func newRecreateCmd() *cobra.Command {
 			"installed plugins and the Docker image cache. Workspace files live\n" +
 			"on the host and are unaffected.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			c, profiles, cfgPath, err := loadConfigWithProfiles()
+			c, profiles, cfgPath, err := loadConfigWithProfiles(cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}

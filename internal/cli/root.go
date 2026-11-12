@@ -3,6 +3,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
@@ -26,7 +27,7 @@ func NewRootCmd() *cobra.Command {
 		SilenceErrors: true,
 		Args:          rejectUnknownCommand,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDefault(cmd.Context(), args)
+			return runDefault(cmd.Context(), cmd.ErrOrStderr(), args)
 		},
 	}
 	root.PersistentFlags().StringVar(&configPath, "config", "", "path to config.yaml (default ~/.config/code-vm/config.yaml)")
@@ -115,6 +116,11 @@ func loadConfig() (config.Config, string, error) {
 	if err := c.MountsExcludeTree(config.ProfilesDirFor(path), "the code-vm profiles"); err != nil {
 		return config.Config{}, path, err
 	}
+	// Sources are git mirrors shipped into the agent home and are trusted host
+	// input like profiles: the agent must never be able to write them.
+	if err := c.MountsExcludeTree(profile.SourcesDir(config.ProfilesDirFor(path)), "the code-vm profile sources"); err != nil {
+		return config.Config{}, path, err
+	}
 	// The private key grants shell access as the agent user from outside the
 	// sandbox, so the agent must never be able to read it.
 	if err := c.MountsExcludeTree(config.SSHDirFor(path), "the agent SSH key"); err != nil {
@@ -127,8 +133,9 @@ func loadConfig() (config.Config, string, error) {
 // Commands that render the VM or apply session state use this, so a broken
 // profile fails at invocation start rather than mid-boot. Management commands
 // (stop, status, profile list/remove, ...) stay on loadConfig: they must keep
-// working precisely when a listed profile is broken.
-func loadConfigWithProfiles() (config.Config, []profile.Profile, string, error) {
+// working precisely when a listed profile is broken. Unavailable sources are
+// reported on warn, never as errors: the rest of the profile still applies.
+func loadConfigWithProfiles(warn io.Writer) (config.Config, []profile.Profile, string, error) {
 	c, path, err := loadConfig()
 	if err != nil {
 		return config.Config{}, nil, "", err
@@ -136,6 +143,9 @@ func loadConfigWithProfiles() (config.Config, []profile.Profile, string, error) 
 	profiles, err := profile.LoadAll(config.ProfilesDirFor(path), c.Profiles)
 	if err != nil {
 		return config.Config{}, nil, "", fmt.Errorf("load profiles: %w", err)
+	}
+	for _, w := range profile.UnavailableWarnings(profiles) {
+		fmt.Fprintln(warn, w)
 	}
 	return c, profiles, path, nil
 }

@@ -159,7 +159,7 @@ func newStartCmd() *cobra.Command {
 		Use:   "start",
 		Short: "Start the sandbox VM (idempotent)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			c, profiles, cfgPath, err := loadConfigWithProfiles()
+			c, profiles, cfgPath, err := loadConfigWithProfiles(cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}

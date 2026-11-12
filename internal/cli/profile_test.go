@@ -2,13 +2,18 @@ package cli
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/wetransform/code-vm/internal/config"
 	"github.com/wetransform/code-vm/internal/lima"
+	"github.com/wetransform/code-vm/internal/profile"
 )
 
 // makeGitProfile creates a local git repo laid out as a valid profile and
@@ -424,8 +429,8 @@ func TestProfileUpdatePullsAndSkipsNonGit(t *testing.T) {
 	}
 
 	got := out.String()
-	if !strings.Contains(got, "manual") || !strings.Contains(got, "skipped") {
-		t.Errorf("expected the hand-made profile noted as skipped, got:\n%s", got)
+	if !strings.Contains(got, "manual") || !strings.Contains(got, "sources only") {
+		t.Errorf("expected the hand-made profile noted as sources only, got:\n%s", got)
 	}
 
 	marker, err := os.ReadFile(filepath.Join(profilesRoot, "team-fish", "files", "marker"))
@@ -713,5 +718,606 @@ func TestProfileApplyRequiresRunningVM(t *testing.T) {
 	err := root.Execute()
 	if err == nil || !strings.Contains(err.Error(), "not running") {
 		t.Errorf("apply on a stopped VM = %v, want a not-running error", err)
+	}
+}
+
+// gitCLI runs git in dir and returns its trimmed output, failing the test on
+// error. The fixed identity and disabled signing keep fixtures independent
+// of the host's git config.
+func gitCLI(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir,
+		"-c", "user.email=t@t", "-c", "user.name=t",
+		"-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// makeSourceRepoCLI mirrors makeSourceRepo in internal/profile (test helpers
+// do not cross packages): SKILL.md, an executable bin/run, an empty file, a
+// symlink link -> SKILL.md, and secret.txt marked export-ignore, committed
+// on main and tagged v1. It returns the repo path, usable as a clone URL.
+func makeSourceRepoCLI(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	gitCLI(t, dir, "init", "-q")
+	for rel, content := range map[string]string{
+		"SKILL.md":       "# skill\n",
+		"bin/run":        "#!/bin/sh\necho run\n",
+		"empty":          "",
+		"secret.txt":     "do not ship\n",
+		".gitattributes": "secret.txt export-ignore\n",
+	} {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(filepath.Join(dir, "bin", "run"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("SKILL.md", filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	gitCLI(t, dir, "add", "-A")
+	gitCLI(t, dir, "commit", "-q", "-m", "init")
+	gitCLI(t, dir, "branch", "-M", "main")
+	gitCLI(t, dir, "tag", "v1")
+	return dir
+}
+
+// commitSource adds a commit to the source repo at dir and returns its id.
+func commitSource(t *testing.T, dir, msg string) string {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# "+msg+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCLI(t, dir, "commit", "-q", "-am", msg)
+	return gitCLI(t, dir, "rev-parse", "HEAD")
+}
+
+// makeGitProfileWithSource creates a git repo laid out as a profile whose
+// manifest declares one source pulled from repo into .claude/skills/s.
+func makeGitProfileWithSource(t *testing.T, repo string) string {
+	t.Helper()
+	src := filepath.Join(t.TempDir(), "with-source")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "description: fixture with a source\nsources:\n  - repo: " + repo + "\n    into: .claude/skills/s\n"
+	if err := os.WriteFile(filepath.Join(src, "profile.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCLI(t, src, "init", "-q")
+	gitCLI(t, src, "add", ".")
+	gitCLI(t, src, "commit", "-q", "-m", "v1")
+	return src
+}
+
+// executor is the part of a cobra root runRoot drives.
+type executor interface {
+	SetOut(io.Writer)
+	SetErr(io.Writer)
+	SetArgs([]string)
+	Execute() error
+}
+
+// runRoot executes root with args, capturing stdout and stderr together.
+func runRoot(root executor, args ...string) (string, error) {
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs(args)
+	err := root.Execute()
+	return out.String(), err
+}
+
+func TestProfileAddIntoGeneratesWrapperAndSyncs(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	src := makeSourceRepoCLI(t)
+
+	out, err := runRoot(root, "profile", "add", src, "--into", ".claude/skills/s", "--ref", "main", "wrap")
+	if err != nil {
+		t.Fatalf("profile add --into: %v\n%s", err, out)
+	}
+	manifest, err := os.ReadFile(filepath.Join(dir, "profiles", "wrap", "profile.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`into: ".claude/skills/s"`, `ref: "main"`} {
+		if !strings.Contains(string(manifest), want) {
+			t.Errorf("wrapper manifest lacks %q:\n%s", want, manifest)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sources", "wrap", "s", "HEAD")); err != nil {
+		t.Errorf("expected a synced checkout: %v", err)
+	}
+	if !strings.Contains(out, "trusting its author") || !strings.Contains(out, "sources are pulled") {
+		t.Errorf("expected the trust warning with the sources sentence, got:\n%s", out)
+	}
+}
+
+func TestProfileAddRefRequiresInto(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	src := makeSourceRepoCLI(t)
+
+	if out, err := runRoot(root, "profile", "add", src, "--ref", "main", "wrap"); err == nil {
+		t.Fatalf("expected --ref without --into to fail; output:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "profiles", "wrap")); !os.IsNotExist(err) {
+		t.Errorf("nothing should be written on a usage error, stat err = %v", err)
+	}
+}
+
+// A YAML keyword as --ref must stay the literal ref: written bare, `null`
+// would decode as no ref and silently unpin the source.
+func TestProfileAddIntoKeepsYAMLKeywordRef(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	src := makeSourceRepoCLI(t)
+
+	// No such ref exists, so the sync fails; the profile is installed anyway.
+	if out, err := runRoot(root, "profile", "add", src, "--into", "tools/s", "--ref", "null", "wrap"); err != nil {
+		t.Fatalf("profile add: %v\n%s", err, out)
+	}
+	m, err := profile.LoadManifest(filepath.Join(dir, "profiles"), "wrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Sources[0].Ref; got != "null" {
+		t.Errorf("Ref = %q, want the literal ref null", got)
+	}
+}
+
+// --into is validated by the manifest rules once written; an invalid value
+// leaves nothing behind.
+func TestProfileAddIntoRejectsInvalidInto(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	src := makeSourceRepoCLI(t)
+
+	out, err := runRoot(root, "profile", "add", src, "--into", "tools/s\": [x # y", "wrap")
+	if err == nil || !strings.Contains(err.Error(), "only [a-zA-Z0-9._/-] is allowed") {
+		t.Fatalf("expected the manifest's into rule to reject the value, got %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "profiles", "wrap")); !os.IsNotExist(err) {
+		t.Errorf("an invalid wrapper must be removed again, stat err = %v", err)
+	}
+}
+
+func TestProfileAddSyncsSourcesOfRealProfile(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	src := makeGitProfileWithSource(t, makeSourceRepoCLI(t))
+
+	out, err := runRoot(root, "profile", "add", src)
+	if err != nil {
+		t.Fatalf("profile add: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sources", "with-source", "s", "HEAD")); err != nil {
+		t.Errorf("expected the declared source to be synced: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "sources are pulled") {
+		t.Errorf("expected the sources sentence in the trust warning, got:\n%s", out)
+	}
+}
+
+// An unreachable source must not block installing the rest of the profile:
+// it stays unavailable until profile update succeeds.
+func TestProfileAddUnreachableSourceStillInstalls(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	src := makeGitProfileWithSource(t, filepath.Join(t.TempDir(), "missing"))
+
+	out, err := runRoot(root, "profile", "add", src)
+	if err != nil {
+		t.Fatalf("profile add with an unreachable source: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "profiles", "with-source")); err != nil {
+		t.Errorf("expected the profile to be installed: %v", err)
+	}
+	if !strings.Contains(out, "stays unavailable") {
+		t.Errorf("expected the failed source to be reported, got:\n%s", out)
+	}
+}
+
+func TestProfileUpdateSyncsPrunesAndReportsFailures(t *testing.T) {
+	root := NewRootCmd() // one root, reused for every invocation
+	dir := withScratchConfig(t)
+	profilesRoot := filepath.Join(dir, "profiles")
+	src := makeSourceRepoCLI(t)
+
+	if out, err := runRoot(root, "profile", "add", src, "--into", ".claude/skills/s", "wrap"); err != nil {
+		t.Fatalf("add: %v\n%s", err, out)
+	}
+
+	c2 := commitSource(t, src, "c2")
+	out, err := runRoot(root, "profile", "update")
+	if err != nil {
+		t.Fatalf("update: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "sources only") {
+		t.Errorf("expected the wrapper noted as sources only, got:\n%s", out)
+	}
+	p, err := profile.Load(profilesRoot, "wrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Sources[0].Commit; got != c2 {
+		t.Errorf("commit after update = %s, want %s", got, c2)
+	}
+
+	// Moving the source renames it: the old checkout is pruned and the new
+	// one is created.
+	writeProfile(t, profilesRoot, "wrap", "description: wrapper\nsources:\n  - repo: "+src+"\n    into: other/t\n")
+	if out, err := runRoot(root, "profile", "update", "wrap"); err != nil {
+		t.Fatalf("update after rename: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sources", "wrap", "s")); !os.IsNotExist(err) {
+		t.Errorf("expected sources/wrap/s pruned, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sources", "wrap", "t", "HEAD")); err != nil {
+		t.Errorf("expected sources/wrap/t synced: %v", err)
+	}
+
+	// An unreachable repo fails the update but never discards the checkout.
+	writeProfile(t, profilesRoot, "wrap", "description: wrapper\nsources:\n  - repo: "+filepath.Join(t.TempDir(), "missing")+"\n    into: other/t\n")
+	out, err = runRoot(root, "profile", "update")
+	if err == nil {
+		t.Fatalf("expected update to fail on an unreachable source; output:\n%s", out)
+	}
+	if !strings.Contains(out, "could not be updated") {
+		t.Errorf("expected a failure summary, got:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sources", "wrap", "t", "HEAD")); err != nil {
+		t.Errorf("a failed fetch must keep the checkout: %v", err)
+	}
+}
+
+// Without a name, one invalid local profile (inactive, not a git clone)
+// must not stop the others from updating; the run still exits non-zero.
+func TestProfileUpdateAllContinuesPastInvalidProfile(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	profilesRoot := filepath.Join(dir, "profiles")
+	src := makeSourceRepoCLI(t)
+
+	if out, err := runRoot(root, "profile", "add", src, "--into", ".claude/skills/s", "wrap"); err != nil {
+		t.Fatalf("add: %v\n%s", err, out)
+	}
+	// Sorted before "wrap", so it is reached first.
+	writeProfile(t, profilesRoot, "broken", "description: bad\npackages: [Not_Valid]\n")
+	c2 := commitSource(t, src, "c2")
+
+	out, err := runRoot(root, "profile", "update")
+	if err == nil {
+		t.Fatalf("expected update to fail on the invalid profile; output:\n%s", out)
+	}
+	if !strings.Contains(out, "broken: invalid: ") || strings.Contains(out, "invalid after update") {
+		t.Errorf("expected the non-git profile reported as invalid (no pull happened), got:\n%s", out)
+	}
+	if !strings.Contains(out, "1 profile(s) invalid: broken") || !strings.Contains(err.Error(), "1 profile(s) invalid") {
+		t.Errorf("expected an invalid-profile summary, got err %v and:\n%s", err, out)
+	}
+	if !strings.Contains(out, "wrap: updated") {
+		t.Errorf("expected the valid profile still updated, got:\n%s", out)
+	}
+	p, err := profile.Load(profilesRoot, "wrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Sources[0].Commit; got != c2 {
+		t.Errorf("commit after update = %s, want %s", got, c2)
+	}
+
+	// Named explicitly, an invalid profile still aborts.
+	out, err = runRoot(root, "profile", "update", "broken")
+	if err == nil || !strings.Contains(err.Error(), "profile broken is invalid: ") {
+		t.Errorf("expected a hard error for the named invalid profile, got %v\n%s", err, out)
+	}
+}
+
+// A local source repository the agent can write (inside a shared directory)
+// is refused before git ever runs in it; the same repository outside every
+// mount syncs.
+func TestProfileSourceRefusesRepoInsideSharedDirectory(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	profilesRoot := filepath.Join(dir, "profiles")
+	c, _, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared := filepath.Join(c.ProjectsRoot, "skills")
+	if err := os.Rename(makeSourceRepoCLI(t), shared); err != nil {
+		t.Fatal(err)
+	}
+
+	want := "repository path " + config.CanonicalizeExisting(shared) + " lies inside the shared directory " +
+		config.CanonicalizeExisting(c.ProjectsRoot) + ", which the agent can write; " +
+		"sources must come from a path or URL the agent cannot modify"
+	const hint = "move the repository outside the shared directories or use a remote URL"
+
+	// A wrapper's URL is the user's own argument: refused outright,
+	// nothing written.
+	for _, repo := range []string{shared, "file://" + shared} {
+		out, err := runRoot(root, "profile", "add", repo, "--into", "tools/s", "wrap")
+		if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), hint) {
+			t.Errorf("add %s: err = %v, want the refusal with its hint\n%s", repo, err, out)
+		}
+		for _, p := range []string{filepath.Join(profilesRoot, "wrap"), filepath.Join(dir, "sources", "wrap")} {
+			if _, err := os.Stat(p); !os.IsNotExist(err) {
+				t.Errorf("add %s: nothing may be written for a refused wrapper, %s stat err = %v", repo, p, err)
+			}
+		}
+	}
+
+	// A bundle's source: the profile installs, the source is refused and
+	// never synced, by add and by update. A fresh root: cobra keeps the
+	// --into of the runs above, and registering its flags resets configPath.
+	cfg := configPath
+	root = NewRootCmd()
+	configPath = cfg
+	out, err := runRoot(root, "profile", "add", makeGitProfileWithSource(t, shared))
+	if err != nil {
+		t.Fatalf("profile add: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, want) || !strings.Contains(out, hint) || strings.Contains(out, "until profile update succeeds") {
+		t.Errorf("add: want the refusal with its hint, got:\n%s", out)
+	}
+	out, err = runRoot(root, "profile", "update", "with-source")
+	if err == nil || !strings.Contains(out, want) {
+		t.Errorf("update: err = %v, want the refusal in:\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sources", "with-source")); !os.IsNotExist(err) {
+		t.Errorf("no checkout may be created for a refused source, stat err = %v", err)
+	}
+
+	outside := filepath.Join(t.TempDir(), "skills")
+	if err := os.Rename(shared, outside); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := runRoot(root, "profile", "add", outside, "--into", "tools/s", "wrap"); err != nil {
+		t.Fatalf("profile add outside: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sources", "wrap", "s", "HEAD")); err != nil {
+		t.Errorf("a repository outside the mounts must sync: %v", err)
+	}
+	if out, err := runRoot(root, "profile", "update", "wrap"); err != nil {
+		t.Errorf("update outside: %v\n%s", err, out)
+	}
+	if _, err := profile.Load(profilesRoot, "wrap"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCheckRepo(t *testing.T) {
+	base := t.TempDir()
+	projects := filepath.Join(base, "projects")
+	extra := filepath.Join(base, "extra")
+	outside := filepath.Join(base, "outside")
+	for _, d := range []string{filepath.Join(projects, "sub"), filepath.Join(projects, "skills"), filepath.Join(extra, "x"), filepath.Join(outside, "ok")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// outside/link -> projects/sub: "link/../skills" is projects/skills to
+	// the kernel, outside/skills to a lexical clean.
+	if err := os.Symlink(filepath.Join(projects, "sub"), filepath.Join(outside, "link")); err != nil {
+		t.Fatal(err)
+	}
+	// projects/out -> outside/ok: safe today, retargetable by the agent.
+	if err := os.Symlink(filepath.Join(outside, "ok"), filepath.Join(projects, "out")); err != nil {
+		t.Fatal(err)
+	}
+	c := config.Config{ProjectsRoot: projects, ExtraMounts: []string{extra}}
+	for repo, want := range map[string]string{
+		"https://example.invalid/r.git":                  "",
+		"git@example.invalid:o/r.git":                    "",
+		"file:x/r.git":                                   "",
+		filepath.Join(outside, "ok"):                     "",
+		"file://" + filepath.Join(outside, "ok"):         "",
+		filepath.Join(projects, "skills"):                "lies inside the shared directory " + projects,
+		filepath.Join(extra, "x"):                        "lies inside the shared directory " + extra,
+		"file://" + base + "/pro%6aects/skills":          "lies inside the shared directory " + projects,
+		"file://" + base + "/pro%zzects/skills":          "invalid URL escape",
+		filepath.Join(outside, "link") + "/../skills":    `contains a ".." segment`,
+		filepath.Join(projects, "out"):                   "lies inside the shared directory " + projects,
+		"rel/path":                                       "is relative",
+		"./ok":                                           "is relative",
+		filepath.Join(outside, "missing"):                "does not resolve",
+		"file://" + filepath.Join(projects, "nope", "r"): "does not resolve",
+	} {
+		err := checkRepo(c, repo, "sources")
+		if want == "" {
+			if err != nil {
+				t.Errorf("checkRepo(%q) = %v, want accepted", repo, err)
+			}
+			continue
+		}
+		var r *repoRefusal
+		if err == nil || !errors.As(err, &r) || !strings.Contains(err.Error(), want) {
+			t.Errorf("checkRepo(%q) = %v, want a refusal containing %q", repo, err, want)
+		}
+	}
+}
+
+// The profile bundle itself is held to the same rule: add refuses a clone
+// URL inside a shared directory, and update refuses to pull from an origin
+// that is one.
+func TestProfileBundleRefusesRepoInsideSharedDirectory(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	profilesRoot := filepath.Join(dir, "profiles")
+	c, _, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared := filepath.Join(c.ProjectsRoot, "team-fish")
+	if err := os.Rename(makeGitProfile(t), shared); err != nil {
+		t.Fatal(err)
+	}
+	want := "lies inside the shared directory " + config.CanonicalizeExisting(c.ProjectsRoot) +
+		", which the agent can write; profiles must come from a path or URL the agent cannot modify"
+
+	out, err := runRoot(root, "profile", "add", shared)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("add: err = %v, want the refusal\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(profilesRoot, "team-fish")); !os.IsNotExist(err) {
+		t.Errorf("nothing may be cloned for a refused bundle, stat err = %v", err)
+	}
+
+	// A clone whose origin was later pointed into a shared directory.
+	if out, err := runRoot(root, "profile", "add", makeGitProfile(t), "a-moved"); err != nil {
+		t.Fatalf("add a-moved: %v\n%s", err, out)
+	}
+	if out, err := runRoot(root, "profile", "add", makeGitProfile(t), "b-kept"); err != nil {
+		t.Fatalf("add b-kept: %v\n%s", err, out)
+	}
+	gitCLI(t, filepath.Join(profilesRoot, "a-moved"), "remote", "set-url", "origin", shared)
+	out, err = runRoot(root, "profile", "update")
+	if err == nil || !strings.Contains(err.Error(), "could not be pulled: a-moved") {
+		t.Errorf("update: err = %v, want a-moved recorded as not pulled\n%s", err, out)
+	}
+	if !strings.Contains(out, "a-moved: pull failed: ") || !strings.Contains(out, want) || !strings.Contains(out, "b-kept: updated") {
+		t.Errorf("update: want a-moved refused and b-kept updated, got:\n%s", out)
+	}
+	if out, err := runRoot(root, "profile", "update", "a-moved"); err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("update a-moved: err = %v, want the refusal\n%s", err, out)
+	}
+}
+
+// Without a name, a profile whose pull fails is reported and skipped; the
+// others still update, and the run exits non-zero naming it.
+func TestProfileUpdateAllContinuesPastFailedPull(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	profilesRoot := filepath.Join(dir, "profiles")
+	gone := makeGitProfile(t)
+	kept := makeGitProfile(t)
+	if out, err := runRoot(root, "profile", "add", gone, "a-gone"); err != nil {
+		t.Fatalf("add a-gone: %v\n%s", err, out)
+	}
+	if out, err := runRoot(root, "profile", "add", kept, "b-kept"); err != nil {
+		t.Fatalf("add b-kept: %v\n%s", err, out)
+	}
+	// Rewriting the only commit upstream makes the --ff-only pull fail.
+	gitCLI(t, gone, "commit", "-q", "--amend", "-m", "rewritten")
+	if err := os.WriteFile(filepath.Join(kept, "files", "marker"), []byte("v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCLI(t, kept, "commit", "-q", "-am", "v2")
+
+	out, err := runRoot(root, "profile", "update")
+	if err == nil || !strings.Contains(err.Error(), "1 profile(s) could not be pulled: a-gone") {
+		t.Fatalf("err = %v, want one naming the unpulled a-gone\n%s", err, out)
+	}
+	if !strings.Contains(out, "a-gone: pull failed: ") || strings.Contains(out, "a-gone: updated") {
+		t.Errorf("expected a-gone reported as not pulled and not updated, got:\n%s", out)
+	}
+	if !strings.Contains(out, "b-kept: updated") {
+		t.Errorf("expected b-kept still updated, got:\n%s", out)
+	}
+	marker, err := os.ReadFile(filepath.Join(profilesRoot, "b-kept", "files", "marker"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(marker) != "v2\n" {
+		t.Errorf("b-kept marker = %q, want v2 after update", marker)
+	}
+
+	// Named explicitly, a failed pull still aborts.
+	if out, err := runRoot(root, "profile", "update", "a-gone"); err == nil || !strings.Contains(err.Error(), "git pull") {
+		t.Errorf("expected a hard error for the named profile's pull, got %v\n%s", err, out)
+	}
+}
+
+// Sync failures collected from an earlier profile are still reported when a
+// later profile turns out invalid.
+func TestProfileUpdateReportsSyncFailuresAlongsideInvalidProfile(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	profilesRoot := filepath.Join(dir, "profiles")
+	missing := filepath.Join(t.TempDir(), "missing")
+	writeProfile(t, profilesRoot, "a-wrap", "description: wrapper\nsources:\n  - repo: "+missing+"\n    into: tools/s\n")
+	writeProfile(t, profilesRoot, "z-broken", "description: bad\npackages: [Not_Valid]\n")
+
+	out, err := runRoot(root, "profile", "update")
+	if err == nil {
+		t.Fatalf("expected update to fail; output:\n%s", out)
+	}
+	for _, want := range []string{"z-broken: invalid: ", "1 source(s) could not be updated:", "profile a-wrap: source s (" + missing + ")"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(err.Error(), "1 profile(s) invalid; 1 source(s) could not be updated") {
+		t.Errorf("err = %v, want both counts", err)
+	}
+}
+
+func TestProfileListShowsSourceLines(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	profilesRoot := filepath.Join(dir, "profiles")
+	src := makeSourceRepoCLI(t)
+
+	if out, err := runRoot(root, "profile", "add", src, "--into", ".claude/skills/s", "wrap"); err != nil {
+		t.Fatalf("add: %v\n%s", err, out)
+	}
+	writeProfile(t, profilesRoot, "never", "description: never synced\nsources:\n  - repo: "+src+"\n    into: .claude/skills/n\n    ref: v1\n")
+
+	out, err := runRoot(root, "profile", "list")
+	if err != nil {
+		t.Fatalf("list: %v\n%s", err, out)
+	}
+	commitRe := regexp.MustCompile(`\b[0-9a-f]{12}\b`)
+	var synced, unsynced bool
+	states := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] != "source" {
+			states[fields[0]] = fields[1]
+		}
+		if strings.Contains(line, "source") && strings.Contains(line, "~/.claude/skills/s") && commitRe.MatchString(line) {
+			synced = true
+		}
+		if strings.Contains(line, "~/.claude/skills/n") && strings.Contains(line, "unavailable: never fetched") {
+			unsynced = true
+		}
+	}
+	if !synced {
+		t.Errorf("expected a source line with a 12-hex commit for wrap, got:\n%s", out)
+	}
+	if !unsynced {
+		t.Errorf("expected an unavailable source line for never, got:\n%s", out)
+	}
+	if states["never"] != "inactive" {
+		t.Errorf("never state = %q, want inactive; output:\n%s", states["never"], out)
+	}
+}
+
+func TestProfileRemoveDeletesSources(t *testing.T) {
+	root := NewRootCmd()
+	dir := withScratchConfig(t)
+	src := makeSourceRepoCLI(t)
+
+	if out, err := runRoot(root, "profile", "add", src, "--into", ".claude/skills/s", "wrap"); err != nil {
+		t.Fatalf("add: %v\n%s", err, out)
+	}
+	if out, err := runRoot(root, "profile", "remove", "wrap"); err != nil {
+		t.Fatalf("remove: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sources", "wrap")); !os.IsNotExist(err) {
+		t.Errorf("expected sources/wrap removed, stat err = %v", err)
 	}
 }

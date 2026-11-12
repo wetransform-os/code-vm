@@ -175,7 +175,7 @@ func newAllowCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
-			c, profiles, path, err := loadConfigWithProfiles()
+			c, profiles, path, err := loadConfigWithProfiles(cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
