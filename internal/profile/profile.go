@@ -48,6 +48,16 @@ var relPathRe = regexp.MustCompile(`^[a-zA-Z0-9._/-]+$`)
 // ".." is excluded separately in validateSources.
 var gitRefRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/-]*$`)
 
+// FullCommitRe matches a full commit id, SHA-1 or SHA-256, in either case.
+// validateSources lowercases a match, so everything after it compares the
+// canonical form.
+var FullCommitRe = regexp.MustCompile(`(?i)^([0-9a-f]{40}|[0-9a-f]{64})$`)
+
+// abbreviatedCommitRe matches what is almost certainly a shortened commit
+// id: hex only, shorter than a full hash. Such a ref is refused at load
+// rather than treated as a tag or branch name that will not exist.
+var abbreviatedCommitRe = regexp.MustCompile(`(?i)^[0-9a-f]{7,39}$`)
+
 // hookRe matches the manifest's hook entry: a plain file name inside the
 // profile directory.
 var hookRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
@@ -483,8 +493,22 @@ func validateSources(m Manifest, files, templates []File) ([]Source, error) {
 		if spec.Repo == "" || !isSingleLinePrintable(spec.Repo) || strings.HasPrefix(spec.Repo, "-") {
 			return nil, fmt.Errorf("sources[%d]: repo must be a non-empty single-line URL not starting with \"-\", got %q", i, spec.Repo)
 		}
-		if spec.Ref != "" && (!gitRefRe.MatchString(spec.Ref) || strings.Contains(spec.Ref, "..")) {
-			return nil, fmt.Errorf("sources[%d]: ref %q: must match %s and not contain \"..\"", i, spec.Ref, gitRefRe)
+		ref := spec.Ref
+		if ref != "" && (!gitRefRe.MatchString(ref) || strings.Contains(ref, "..")) {
+			return nil, fmt.Errorf("sources[%d]: ref %q: must match %s and not contain \"..\"", i, ref, gitRefRe)
+		}
+		// The ref shapes resolveCommit does not take are refused here, with
+		// the reason, rather than surfacing later as "not found": a pin is
+		// a full commit id (SHA-1 or SHA-256, stored lowercase so the hash
+		// check never misreads it as a ref name), a name is a plain tag or
+		// branch name.
+		switch {
+		case abbreviatedCommitRe.MatchString(ref):
+			return nil, fmt.Errorf("sources[%d]: ref %q looks like an abbreviated commit id; a pin needs the full hash", i, ref)
+		case FullCommitRe.MatchString(ref):
+			ref = strings.ToLower(ref)
+		case ref == "HEAD" || strings.HasPrefix(ref, "refs/"):
+			return nil, fmt.Errorf("sources[%d]: ref %q: give a plain tag or branch name (or omit ref for the default branch), not a fully qualified ref", i, ref)
 		}
 		into := path.Clean(strings.TrimSuffix(spec.Into, "/"))
 		if into == "." || strings.HasPrefix(into, "/") {
@@ -516,7 +540,7 @@ func validateSources(m Manifest, files, templates []File) ([]Source, error) {
 				"choose a different directory name for one of them", j, out[j].Into, i, into, name)
 		}
 		names[name] = i
-		out = append(out, Source{Name: name, Into: into, Repo: spec.Repo, Ref: spec.Ref})
+		out = append(out, Source{Name: name, Into: into, Repo: spec.Repo, Ref: ref})
 	}
 	for i, a := range out {
 		for _, b := range out[i+1:] {

@@ -498,13 +498,27 @@ sources:
     ref: main
   - repo: git@example.invalid:x/y.git
     into: tools/y
+  - repo: https://example.invalid/upper
+    into: tools/upper
+    ref: 3F2A9C1E7D0B4A5F8C6E2D1B9A7F3E5C4D2B1A0F
+  - repo: https://example.invalid/sha256
+    into: tools/sha256
+    ref: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
 `, nil)
 	p, err := LoadManifest(dir, "team")
 	if err != nil {
 		t.Fatalf("LoadManifest: %v", err)
 	}
-	if len(p.Sources) != 2 {
-		t.Fatalf("Sources = %d, want 2", len(p.Sources))
+	if len(p.Sources) != 4 {
+		t.Fatalf("Sources = %d, want 4", len(p.Sources))
+	}
+	// A full commit id is stored lowercase so the pin check never reads an
+	// uppercase hash as a ref name; a SHA-256 id is a pin too.
+	if got := p.Sources[2].Ref; got != "3f2a9c1e7d0b4a5f8c6e2d1b9a7f3e5c4d2b1a0f" {
+		t.Errorf("uppercase hash stored as %q", got)
+	}
+	if !FullCommitRe.MatchString(p.Sources[3].Ref) {
+		t.Errorf("a 64-hex id must count as a full commit id, got %q", p.Sources[3].Ref)
 	}
 	s := p.Sources[0]
 	if s.Name != "jira-ticket" || s.Into != ".claude/skills/jira-ticket" || s.Ref != "main" || s.Repo != "https://example.invalid/jira-tickets" {
@@ -568,6 +582,9 @@ func TestLoadManifestRejectsBadSources(t *testing.T) {
 		"ref dash":             {"sources:\n  - {repo: u, into: x, ref: -x}\n", nil, "ref"},
 		"ref dotdot":           {"sources:\n  - {repo: u, into: x, ref: a..b}\n", nil, "ref"},
 		"ref space":            {"sources:\n  - {repo: u, into: x, ref: \"a b\"}\n", nil, "ref"},
+		"ref abbreviated":      {"sources:\n  - {repo: u, into: x, ref: 7ad0507}\n", nil, "abbreviated commit id"},
+		"ref HEAD":             {"sources:\n  - {repo: u, into: x, ref: HEAD}\n", nil, "plain tag or branch name"},
+		"ref qualified":        {"sources:\n  - {repo: u, into: x, ref: refs/tags/v1}\n", nil, "plain tag or branch name"},
 		"duplicate name":       {"sources:\n  - {repo: u, into: a/x}\n  - {repo: v, into: b/x}\n", nil, `into "a/x" and sources[1]: into "b/x" both give the source name "x"; choose a different directory name`},
 		"duplicate sanitised":  {"sources:\n  - {repo: u, into: tools/a_b}\n  - {repo: v, into: tools/a-b}\n", nil, `into "tools/a_b" and sources[1]: into "tools/a-b" both give the source name "a-b"`},
 		"name empty":           {"sources:\n  - {repo: u, into: tools/...}\n", nil, `leaves no source name`},
