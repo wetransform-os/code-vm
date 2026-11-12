@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"encoding/base64"
 	"fmt"
 	"path"
 	"strings"
@@ -50,6 +51,29 @@ func GuestFiles(profiles []Profile) []guest.DataFile {
 				Content:     list.String(),
 			})
 		}
+		// sources.list names the available sources the applier unpacks, as
+		// "<name> <into>" lines. Unavailable sources render nothing, and like
+		// files.list it is omitted when empty (an empty file cannot be a Lima
+		// mode:data block scalar); PROFILE_SOURCES keeps a stale one inert.
+		var sources strings.Builder
+		for _, s := range p.Sources {
+			if s.Unavailable != "" {
+				continue
+			}
+			out = append(out, guest.DataFile{
+				Path:        path.Join(GuestRoot, p.Name, "sources", s.Name+".tar.gz.b64"),
+				Permissions: "0444",
+				Content:     wrap76(base64.StdEncoding.EncodeToString(s.Archive)),
+			})
+			sources.WriteString(s.Name + " " + s.Into + "\n")
+		}
+		if sources.Len() > 0 {
+			out = append(out, guest.DataFile{
+				Path:        path.Join(GuestRoot, p.Name, "sources.list"),
+				Permissions: "0444",
+				Content:     sources.String(),
+			})
+		}
 		if p.Hook != nil {
 			out = append(out, guest.DataFile{
 				Path:        path.Join(GuestRoot, p.Name, "hook"),
@@ -65,7 +89,7 @@ func GuestFiles(profiles []Profile) []guest.DataFile {
 // time against charsets free of whitespace and quotes, so %q quoting is safe
 // for shell sourcing.
 func manifestEnv(profiles []Profile) guest.DataFile {
-	var names, packages, hooks, withFiles []string
+	var names, packages, hooks, withFiles, withSources []string
 	seenPkg := map[string]bool{}
 	shell := ""
 	for _, p := range profiles {
@@ -85,6 +109,9 @@ func manifestEnv(profiles []Profile) guest.DataFile {
 		if len(p.Files) > 0 {
 			withFiles = append(withFiles, p.Name)
 		}
+		if hasAvailableSource(p) {
+			withSources = append(withSources, p.Name)
+		}
 	}
 	var b strings.Builder
 	b.WriteString("# Written by code-vm. Sourced by provision-system.sh and apply-profiles.sh.\n")
@@ -96,7 +123,33 @@ func manifestEnv(profiles []Profile) guest.DataFile {
 	// dropped-files profile version left on disk is never consulted, because
 	// this always-overwritten manifest no longer names it.
 	fmt.Fprintf(&b, "PROFILE_FILES=%q\n", strings.Join(withFiles, " "))
+	// PROFILE_SOURCES gates which sources.list the applier reads, for the same
+	// stale-leftover reason as PROFILE_FILES.
+	fmt.Fprintf(&b, "PROFILE_SOURCES=%q\n", strings.Join(withSources, " "))
 	return guest.DataFile{Path: ManifestPath, Permissions: "0444", Content: b.String()}
+}
+
+func hasAvailableSource(p Profile) bool {
+	for _, s := range p.Sources {
+		if s.Unavailable == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// wrap76 breaks base64 into newline-terminated 76-column lines: a well-formed
+// Lima block scalar, and input the guest's `base64 -d` accepts.
+func wrap76(s string) string {
+	var b strings.Builder
+	for len(s) > 76 {
+		b.WriteString(s[:76] + "\n")
+		s = s[76:]
+	}
+	if s != "" {
+		b.WriteString(s + "\n")
+	}
+	return b.String()
 }
 
 // AllowDomains merges the config's extraDomains with every active profile's

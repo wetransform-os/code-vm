@@ -13,6 +13,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -41,6 +42,11 @@ var shellRe = regexp.MustCompile(`^/[a-zA-Z0-9._/-]+$`)
 // guest applier reads back, so whitespace and metacharacters are rejected
 // wholesale. ".." is excluded by the per-segment check in loadTree.
 var relPathRe = regexp.MustCompile(`^[a-zA-Z0-9._/-]+$`)
+
+// gitRefRe matches a git ref a source may pin: a branch, tag or commit name.
+// The first character excludes "-" so a ref can never parse as a git option;
+// ".." is excluded separately in validateSources.
+var gitRefRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/-]*$`)
 
 // hookRe matches the manifest's hook entry: a plain file name inside the
 // profile directory.
@@ -115,6 +121,15 @@ type Manifest struct {
 	Hook        string                `yaml:"hook"`
 	Secrets     map[string]SecretSpec `yaml:"secrets"`
 	Vars        map[string]VarSpec    `yaml:"vars"`
+	Sources     []SourceSpec          `yaml:"sources"`
+}
+
+// SourceSpec declares a plain git repository placed at a directory under
+// the agent home. Ref is optional: empty means the remote's default branch.
+type SourceSpec struct {
+	Repo string `yaml:"repo"`
+	Into string `yaml:"into"`
+	Ref  string `yaml:"ref"`
 }
 
 // File is one file a profile ships into the agent home.
@@ -124,14 +139,28 @@ type File struct {
 	Executable bool
 }
 
+// Source is a validated SourceSpec. Name and the cleaned Into are derived at
+// manifest load; Commit, Archive and Unavailable are filled in only by Load's
+// checkout resolution, never by LoadManifest.
+type Source struct {
+	Name        string // sourceName(Into): Into's last segment sanitised to a profile-style name
+	Into        string // cleaned forward-slash path relative to the agent home
+	Repo        string
+	Ref         string
+	Commit      string
+	Archive     []byte
+	Unavailable string // why the checkout could not be resolved; "" when it could
+}
+
 // Profile is a loaded, validated bundle.
 type Profile struct {
 	Name      string
 	Dir       string
 	Manifest  Manifest
-	Files     []File // sorted by Rel
-	Templates []File // sorted by Rel
-	Hook      []byte // nil when the manifest declares no hook
+	Files     []File   // sorted by Rel
+	Templates []File   // sorted by Rel
+	Hook      []byte   // nil when the manifest declares no hook
+	Sources   []Source // manifest order
 }
 
 // ValidateName reports whether name is usable as a profile name. Exported
@@ -144,8 +173,22 @@ func ValidateName(name string) error {
 	return nil
 }
 
-// Load reads and validates the profile at profilesDir/name.
+// Load reads and validates the profile at profilesDir/name, then resolves
+// and archives its sources from their checkouts (see loadSources).
 func Load(profilesDir, name string) (Profile, error) {
+	p, err := LoadManifest(profilesDir, name)
+	if err != nil {
+		return Profile{}, err
+	}
+	if err := loadSources(profilesDir, &p); err != nil {
+		return Profile{}, fmt.Errorf("profile %s: %w", name, err)
+	}
+	return p, nil
+}
+
+// LoadManifest reads and validates the profile at profilesDir/name without
+// touching any source checkout.
+func LoadManifest(profilesDir, name string) (Profile, error) {
 	if err := ValidateName(name); err != nil {
 		return Profile{}, err
 	}
@@ -190,6 +233,9 @@ func Load(profilesDir, name string) (Profile, error) {
 		return Profile{}, fmt.Errorf("profile %s: %w", name, err)
 	}
 	if p.Templates, err = loadTemplates(dir); err != nil {
+		return Profile{}, fmt.Errorf("profile %s: %w", name, err)
+	}
+	if p.Sources, err = validateSources(m, p.Files, p.Templates); err != nil {
 		return Profile{}, fmt.Errorf("profile %s: %w", name, err)
 	}
 	// Validate that templates only reference declared secrets and vars.
@@ -240,8 +286,8 @@ func Load(profilesDir, name string) (Profile, error) {
 		}
 		p.Hook = b
 	}
-	if len(p.Files) == 0 && len(m.Packages) == 0 && m.Shell == "" && len(m.Domains) == 0 && m.Hook == "" && len(p.Templates) == 0 && len(m.Secrets) == 0 && len(m.Vars) == 0 {
-		return Profile{}, fmt.Errorf("profile %s: declares nothing: no files, packages, shell, domains, hook, templates, secrets or vars", name)
+	if len(p.Files) == 0 && len(m.Packages) == 0 && m.Shell == "" && len(m.Domains) == 0 && m.Hook == "" && len(p.Templates) == 0 && len(m.Secrets) == 0 && len(m.Vars) == 0 && len(m.Sources) == 0 {
+		return Profile{}, fmt.Errorf("profile %s: declares nothing: no files, packages, shell, domains, hook, templates, secrets, vars or sources", name)
 	}
 	return p, nil
 }
@@ -260,9 +306,15 @@ type shippedAs struct {
 // order: boot (template wins) and apply (files/ wins) run the two delivery
 // mechanisms in different orders, so which one would actually win differs
 // between the two paths for the same config — see the design spec.
+// Likewise a source owns its directory outright (wiped and refilled on
+// apply), so a file or template at, inside or above another profile's source
+// directory, or two overlapping source directories, are rejected rather than
+// resolved by order: neither winner would be coherent.
 func LoadAll(profilesDir string, names []string) ([]Profile, error) {
 	seen := map[string]bool{}
 	shipped := map[string]shippedAs{} // Rel -> who shipped it, and how
+	type sourceOwner struct{ profile, into string }
+	var owners []sourceOwner // sources of the profiles loaded so far
 	out := make([]Profile, 0, len(names))
 	for _, n := range names {
 		if seen[n] {
@@ -272,6 +324,30 @@ func LoadAll(profilesDir string, names []string) ([]Profile, error) {
 		p, err := Load(profilesDir, n)
 		if err != nil {
 			return nil, err
+		}
+		for _, rel := range shippedRels(p) {
+			for _, o := range owners {
+				if err := checkSourceCollision(rel, n, o.into, o.profile); err != nil {
+					return nil, err
+				}
+			}
+		}
+		for _, src := range p.Sources {
+			for _, o := range owners {
+				if under(src.Into, o.into) || under(o.into, src.Into) {
+					return nil, fmt.Errorf("source %s of profile %s and source %s of profile %s overlap; "+
+						"sources own their directory outright, so this cannot be resolved by order",
+						o.into, o.profile, src.Into, n)
+				}
+			}
+			for rel, prior := range shipped {
+				if err := checkSourceCollision(rel, prior.profile, src.Into, n); err != nil {
+					return nil, err
+				}
+			}
+		}
+		for _, src := range p.Sources {
+			owners = append(owners, sourceOwner{profile: n, into: src.Into})
 		}
 		for _, f := range p.Files {
 			if prior, ok := shipped[f.Rel]; ok && prior.kind != "files/" {
@@ -296,6 +372,36 @@ func LoadAll(profilesDir string, names []string) ([]Profile, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// shippedRels lists the Rel of every file and template of p.
+func shippedRels(p Profile) []string {
+	var rels []string
+	for _, f := range p.Files {
+		rels = append(rels, f.Rel)
+	}
+	for _, t := range p.Templates {
+		rels = append(rels, t.Rel)
+	}
+	return rels
+}
+
+// checkSourceCollision rejects rel (shipped by shipper) when it lies at or
+// inside, or at an ancestor of, a source directory into (owned by owner).
+func checkSourceCollision(rel, shipper, into, owner string) error {
+	if under(rel, into) {
+		return fmt.Errorf(
+			"%s: profile %s ships files/%s inside source %s of profile %s; "+
+				"sources own their directory outright, so this cannot be resolved by order",
+			rel, shipper, rel, into, owner)
+	}
+	if under(into, rel) {
+		return fmt.Errorf(
+			"%s: profile %s ships files/%s at an ancestor of source %s of profile %s; "+
+				"a file cannot be a parent directory",
+			rel, shipper, rel, into, owner)
+	}
+	return nil
 }
 
 func validateManifest(m Manifest) error {
@@ -338,6 +444,93 @@ func validateManifest(m Manifest) error {
 		}
 	}
 	return nil
+}
+
+// under reports whether rel is into or lies beneath it.
+func under(rel, into string) bool {
+	return rel == into || strings.HasPrefix(rel, into+"/")
+}
+
+// nonNameRun matches a run of characters a source name cannot hold.
+var nonNameRun = regexp.MustCompile(`[^a-zA-Z0-9-]+`)
+
+// sourceName derives a source's name from its cleaned into: the last
+// segment with every run of characters outside [a-zA-Z0-9-] turned into one
+// "-", runs of "-" collapsed, leading and trailing "-" trimmed, and cut to
+// 63 characters, so .oh-my-zsh names oh-my-zsh and jira_tickets names
+// jira-tickets. The name keys the checkout directory and the guest archive
+// file. The result may still be empty; the caller checks it with
+// ValidateName.
+func sourceName(into string) string {
+	n := nonNameRun.ReplaceAllString(path.Base(into), "-")
+	n = strings.Trim(dashRun.ReplaceAllString(n, "-"), "-")
+	if len(n) > 63 {
+		n = strings.TrimRight(n[:63], "-")
+	}
+	return n
+}
+
+// dashRun matches a run of "-".
+var dashRun = regexp.MustCompile(`-{2,}`)
+
+// validateSources checks every source spec and returns the derived Sources.
+// A source's directory is owned by its checkout, so nothing else the profile
+// ships (another source, files/, templates/) may land at or inside it.
+func validateSources(m Manifest, files, templates []File) ([]Source, error) {
+	var out []Source
+	names := map[string]int{}
+	for i, spec := range m.Sources {
+		if spec.Repo == "" || !isSingleLinePrintable(spec.Repo) || strings.HasPrefix(spec.Repo, "-") {
+			return nil, fmt.Errorf("sources[%d]: repo must be a non-empty single-line URL not starting with \"-\", got %q", i, spec.Repo)
+		}
+		if spec.Ref != "" && (!gitRefRe.MatchString(spec.Ref) || strings.Contains(spec.Ref, "..")) {
+			return nil, fmt.Errorf("sources[%d]: ref %q: must match %s and not contain \"..\"", i, spec.Ref, gitRefRe)
+		}
+		into := path.Clean(strings.TrimSuffix(spec.Into, "/"))
+		if into == "." || strings.HasPrefix(into, "/") {
+			return nil, fmt.Errorf("sources[%d]: into %q must be a directory path relative to the agent home", i, spec.Into)
+		}
+		if !relPathRe.MatchString(into) {
+			return nil, fmt.Errorf("sources[%d]: into %q: only [a-zA-Z0-9._/-] is allowed", i, into)
+		}
+		for _, seg := range strings.Split(into, "/") {
+			if seg == ".." {
+				return nil, fmt.Errorf("sources[%d]: into %q must stay inside the agent home", i, into)
+			}
+		}
+		for f := range forbiddenFiles {
+			if under(f, into) {
+				return nil, fmt.Errorf("sources[%d]: into %q: profiles may not ship the locked Claude settings (%s)", i, into, f)
+			}
+		}
+		name := sourceName(into)
+		if err := ValidateName(name); err != nil {
+			return nil, fmt.Errorf("sources[%d]: into %q: its last segment %q leaves no source name once reduced to letters, digits and -; "+
+				"choose a different directory name", i, into, path.Base(into))
+		}
+		if j, dup := names[name]; dup {
+			return nil, fmt.Errorf("sources[%d]: into %q and sources[%d]: into %q both give the source name %q; "+
+				"choose a different directory name for one of them", j, out[j].Into, i, into, name)
+		}
+		names[name] = i
+		out = append(out, Source{Name: name, Into: into, Repo: spec.Repo, Ref: spec.Ref})
+	}
+	for i, a := range out {
+		for _, b := range out[i+1:] {
+			if under(a.Into, b.Into) || under(b.Into, a.Into) {
+				return nil, fmt.Errorf("sources: %q and %q: one is inside the other; a source directory may not contain another source", a.Into, b.Into)
+			}
+		}
+		for _, f := range append(append([]File{}, files...), templates...) {
+			if under(f.Rel, a.Into) {
+				return nil, fmt.Errorf("sources: %s is inside the source directory %q; a source directory may not contain shipped files", f.Rel, a.Into)
+			}
+			if under(a.Into, f.Rel) {
+				return nil, fmt.Errorf("sources: %s is an ancestor of the source directory %q; a file cannot be a parent directory", f.Rel, a.Into)
+			}
+		}
+	}
+	return out, nil
 }
 
 // loadTree reads a tree from dir/subdir. Only regular files are accepted: a symlink

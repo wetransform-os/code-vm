@@ -369,8 +369,9 @@ func testProfiles() []profile.Profile {
 			Domains:     []string{"raw.githubusercontent.com"},
 			Hook:        "hook.sh",
 		},
-		Files: []profile.File{{Rel: ".claude/CLAUDE.md", Content: []byte("# rules\n")}},
-		Hook:  []byte("#!/bin/bash\necho hook\n"),
+		Files:   []profile.File{{Rel: ".claude/CLAUDE.md", Content: []byte("# rules\n")}},
+		Hook:    []byte("#!/bin/bash\necho hook\n"),
+		Sources: []profile.Source{{Name: "skill", Into: ".claude/skills/skill", Archive: []byte("golden-archive")}},
 	}}
 }
 
