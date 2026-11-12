@@ -498,8 +498,11 @@ func validateSources(m Manifest, files, templates []File) ([]Source, error) {
 				return nil, fmt.Errorf("sources[%d]: into %q must stay inside the agent home", i, into)
 			}
 		}
+		// Either direction: a locked file under the destination would be
+		// wiped with it, and a destination under a locked file would need
+		// mkdir -p to turn that file into a directory.
 		for f := range forbiddenFiles {
-			if under(f, into) {
+			if under(f, into) || under(into, f) {
 				return nil, fmt.Errorf("sources[%d]: into %q: profiles may not ship the locked Claude settings (%s)", i, into, f)
 			}
 		}

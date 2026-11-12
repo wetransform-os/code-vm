@@ -281,6 +281,97 @@ func TestArchiveRejectsOversize(t *testing.T) {
 	}
 }
 
+// gzip shrinks a repetitive blob a thousandfold, so the compressed cap alone
+// would let gigabytes through to the guest's disk; the raw tar stream has
+// its own cap, checked in the same pass.
+func TestArchiveRejectsOversizeUncompressed(t *testing.T) {
+	dir := t.TempDir()
+	src := newRepo(t, nil, func(dir string) {
+		// 70 MiB of zeros compresses to a few tens of KiB, well under
+		// MaxArchiveBytes.
+		if err := os.WriteFile(filepath.Join(dir, "blob"), make([]byte, 70<<20), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	})
+	writeProfile(t, dir, "p", "sources:\n  - {repo: "+src+", into: tools/s}\n", nil)
+	mirror(t, src, checkoutDir(dir, "p", "s"))
+	_, err := Load(dir, "p")
+	if !errors.Is(err, errOverRawCap) || !strings.Contains(err.Error(), "uncompressed cap") {
+		t.Fatalf("err = %v, want an uncompressed-size error", err)
+	}
+}
+
+// A manifest that now names a different repository must not keep resolving
+// against the old checkout's objects: a commit pinned from the previous
+// repository would otherwise install content the new one never had. The
+// new repository is cloned beside the old checkout and swapped in only on
+// success, so a failing clone still leaves the last good checkout.
+func TestSyncSourcesReclonesWhenRepoChanges(t *testing.T) {
+	dir := t.TempDir()
+	repoA := newRepo(t, map[string]string{"a.txt": "from A\n"}, nil)
+	repoB := newRepo(t, map[string]string{"b.txt": "from B\n"}, nil)
+	pinnedA := git(t, repoA, "rev-parse", "HEAD")
+	manifest := func(repo, ref string) string {
+		return "sources:\n  - {repo: " + repo + ", into: tools/s, ref: " + ref + "}\n"
+	}
+
+	writeProfile(t, dir, "p", manifest(repoA, pinnedA), nil)
+	if fails, _ := syncProfile(t, dir, "p"); len(fails) != 0 {
+		t.Fatalf("initial sync: %v", fails)
+	}
+	if got := loadedCommit(t, dir, "p", 0); got != pinnedA {
+		t.Fatalf("commit = %s, want %s", got, pinnedA)
+	}
+
+	// Same pin, different repository: A's commit is not in B, so the sync
+	// must fail rather than serve it from the leftover objects.
+	writeProfile(t, dir, "p", manifest(repoB, pinnedA), nil)
+	fails, _ := syncProfile(t, dir, "p")
+	if len(fails) != 1 {
+		t.Fatalf("a commit the new repository lacks must fail the sync, got %v", fails)
+	}
+	p, err := Load(dir, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Sources[0].Unavailable == "" {
+		t.Fatalf("the old repository's commit must not resolve from the new checkout, got %+v", p.Sources[0])
+	}
+	if got := originOf(checkoutDir(dir, "p", "s")); got != repoB {
+		t.Errorf("checkout origin = %q, want the new repository %q", got, repoB)
+	}
+
+	// Tracking B's branch resolves B's content.
+	writeProfile(t, dir, "p", manifest(repoB, "main"), nil)
+	if fails, _ := syncProfile(t, dir, "p"); len(fails) != 0 {
+		t.Fatalf("sync against B: %v", fails)
+	}
+	p, err = Load(dir, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := p.Sources[0].Commit
+	if want := git(t, repoB, "rev-parse", "HEAD"); commit != want {
+		t.Errorf("commit = %s, want B's HEAD %s", commit, want)
+	}
+	if _, ok := untar(t, p.Sources[0].Archive)["b.txt"]; !ok {
+		t.Error("the archive must come from the new repository")
+	}
+
+	// A change to a repository that cannot be cloned keeps the last good
+	// checkout: nothing is swapped out before the clone succeeded.
+	writeProfile(t, dir, "p", manifest(filepath.Join(t.TempDir(), "nope"), "main"), nil)
+	if fails, _ := syncProfile(t, dir, "p"); len(fails) != 1 {
+		t.Fatalf("a failing clone must be reported, got %v", fails)
+	}
+	if got := loadedCommit(t, dir, "p", 0); got != commit {
+		t.Errorf("after a failed reclone the previous checkout must still resolve, got %s want %s", got, commit)
+	}
+	if leftovers, _ := filepath.Glob(checkoutDir(dir, "p", "s") + ".*"); len(leftovers) != 0 {
+		t.Errorf("no sibling checkouts may linger, got %v", leftovers)
+	}
+}
+
 func TestLoadNeverResolvesParentRepo(t *testing.T) {
 	// The config dir is itself a repo (a versioned ~/.config) and the
 	// checkout dir exists but is no git dir (an interrupted clone): git must

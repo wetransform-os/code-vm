@@ -562,6 +562,7 @@ func TestLoadManifestRejectsBadSources(t *testing.T) {
 		"into absolute":        {"sources:\n  - {repo: u, into: /x}\n", nil, "into"},
 		"into claude dir":      {"sources:\n  - {repo: u, into: .claude}\n", nil, "locked Claude settings"},
 		"into settings":        {"sources:\n  - {repo: u, into: .claude/settings.json}\n", nil, "locked Claude settings"},
+		"into under settings":  {"sources:\n  - {repo: u, into: .claude/settings.json/child}\n", nil, "locked Claude settings"},
 		"repo empty":           {"sources:\n  - {repo: \"\", into: x}\n", nil, "repo"},
 		"repo dash":            {"sources:\n  - {repo: --upload-pack=x, into: x}\n", nil, "repo"},
 		"ref dash":             {"sources:\n  - {repo: u, into: x, ref: -x}\n", nil, "ref"},
