@@ -350,7 +350,9 @@ external resolvers stays blocked.
 
 Profiles are shareable customization bundles for the VM: ship a `CLAUDE.md`,
 install tools, set the agent's shell, run setup as the agent user. They live
-in `~/.config/code-vm/profiles/<name>/` and are activated in `config.yaml`:
+in `~/.config/code-vm/profiles/<name>/` and are activated in `config.yaml`
+(next to them, `~/.config/code-vm/sources/` holds the git checkouts of
+[sources](#sources)):
 
 ```yaml
 profiles:
@@ -366,6 +368,11 @@ code-vm profile update
 code-vm profile apply     # push changes into the running VM; boots apply automatically
 code-vm profile remove fish-shell
 ```
+
+A profile cloned from a local repository must name it by an absolute path
+or a `file://` URL outside every shared directory (projects root and extra
+mounts); `profile add` refuses anything else, and `profile update` refuses
+to pull from such an origin.
 
 A bundle is a directory:
 
@@ -386,6 +393,9 @@ shell: /usr/bin/fish        # agent's login shell
 domains:                    # merged into the egress allowlist
   - raw.githubusercontent.com
 hook: hook.sh               # runs after files and packages, as the agent
+sources:                    # git repositories installed into the home
+  - repo: https://github.com/your-org/some-skill
+    into: .claude/skills/some-skill
 ```
 
 Notes:
@@ -402,6 +412,70 @@ Notes:
 - Deactivating a profile stops applying it, but does not uninstall packages,
   revert the shell, or delete files already in the home. `code-vm recreate`
   is the clean-slate path.
+
+### Sources
+
+A profile can install whole git repositories into the agent's home — a
+team's skills, say — without vendoring them into `files/`:
+
+```yaml
+description: wetf team defaults
+sources:
+  - repo: https://github.com/wetransform/jira-tickets
+    into: .claude/skills/jira-ticket
+    ref: 3f2a9c1e7d0b4a5f8c6e2d1b9a7f3e5c4d2b1a0f   # commit: pinned until edited
+  - repo: git@github.com:wetransform/some-skill.git
+    into: .claude/skills/some-skill
+    ref: main                                        # branch: tracks on update
+```
+
+For a single repository, skip writing a manifest: `--into` generates a local
+wrapper profile with one source (named after the repository unless you give a
+name), which you then activate like any other profile:
+
+```
+code-vm profile add https://github.com/wetransform/jira-tickets --into .claude/skills/jira-ticket --ref <commit>
+```
+
+- `repo` is any URL `git clone` accepts; private repositories use your own
+  git credentials, as `profile add` does. A local repository must be an
+  absolute path or a `file://` URL outside every shared directory (projects
+  root and extra mounts), since the agent could otherwise plant commands
+  that git runs on the host; relative paths are refused.
+  `into` is a directory relative to the agent's home. Its last segment
+  names the source, reduced to letters, digits and `-` (`.oh-my-zsh` is
+  `oh-my-zsh`, `jira_tickets` is `jira-tickets`); two sources of one
+  profile may not reduce to the same name.
+- `ref` is a branch, a tag or a full commit hash. A branch or tag moves on
+  `code-vm profile update`; a commit stays put until the manifest changes;
+  no `ref` means the remote's default branch. Pin a commit for team
+  profiles, so everyone gets the same tree and an upstream push does not
+  reach the agent unreviewed.
+- Only `code-vm profile add` and `code-vm profile update` touch the network.
+  They clone each repository's branches and tags into
+  `~/.config/code-vm/sources/<profile>/<source>/`, which code-vm manages and
+  never mounts into the guest. Boots and `profile apply` install from that
+  local copy, so a fetched source keeps working offline. A change of the
+  remote's default branch is picked up on update.
+- Only tracked content ships (`git archive` of the resolved commit): no
+  `.git`, no ignored files.
+- **The destination directory is wiped and refilled on every boot and every
+  apply**, so files removed upstream disappear and local edits do not
+  survive. That holds even when `into` names a directory that already
+  exists, such as `.config` or `.ssh`: everything else in it is deleted.
+  Give each source a dedicated directory. No file, template or other source
+  of an active profile may land inside it, and `into` cannot contain the
+  locked `.claude/settings.json`.
+- A source whose repository was never fetched, or whose `ref` no longer
+  resolves in the local copy, is *unavailable*: commands print a warning on
+  stderr and skip it, the rest of the profile applies, and a destination
+  installed earlier stays as it was. `code-vm profile list` shows
+  `unavailable: <reason>` under the profile.
+- A fetch that fails while a previous copy exists keeps that copy, and the
+  source keeps installing from it. `profile update` reports the failure,
+  carries on with the remaining sources, and exits non-zero with a summary
+  of the failures.
+- `code-vm profile remove` also deletes the profile's checkouts.
 
 ### Credentials
 
