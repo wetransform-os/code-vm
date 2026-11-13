@@ -1,5 +1,5 @@
 [tools]
-go = "1.26.5"
+go = "1.27.4"
 golangci-lint = "2.12.2"
 shellcheck = "0.11.0"
 shfmt = "3.13.1"
