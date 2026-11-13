@@ -94,7 +94,13 @@ func WriteKnownHosts(path, content string, keys []string) (changed bool, err err
 		if err != nil {
 			return false, fmt.Errorf("read %s: %w", path, err)
 		}
-		if string(old) == content {
+		fi, err := os.Stat(path)
+		if err != nil {
+			return false, fmt.Errorf("stat %s: %w", path, err)
+		}
+		// Current content in a private file: nothing to do. A permissive
+		// file is replaced even so, to end up 0600 as documented.
+		if string(old) == content && fi.Mode().Perm() == 0o600 {
 			return false, nil
 		}
 		if had := knownHostsKeys(string(old)); len(had) > 0 && !sameKeys(had, keys) {

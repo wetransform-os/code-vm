@@ -181,3 +181,24 @@ func TestWriteKnownHostsReportsOnlyKeyChanges(t *testing.T) {
 		}
 	}
 }
+
+// A pin file someone else left world-readable is made private even when its
+// content is already current.
+func TestWriteKnownHostsTightensAPermissiveFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "known_hosts")
+	content := "[127.0.0.1]:60022 ssh-ed25519 AAAA\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := WriteKnownHosts(path, content, []string{"ssh-ed25519 AAAA"})
+	if err != nil || changed {
+		t.Errorf("same keys: changed=%v err=%v", changed, err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %o, want 0600", fi.Mode().Perm())
+	}
+}
