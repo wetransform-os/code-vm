@@ -18,6 +18,58 @@ log() { echo "[provision] $*"; }
 
 export DEBIAN_FRONTEND=noninteractive
 
+# ── Host-side SSH clients ────────────────────────────────────────────────────
+# Every SSH client on the host (Lima's own readiness probes, code-vm, Orca,
+# plain ssh) reaches this sshd through Lima's port forward, so they all
+# arrive from one guest-side address: the Lima gateway, host.lima.internal.
+# OpenSSH's per-source penalties (on by default since 9.8) treat them as one
+# client. A single misbehaving one, such as Orca still pinning a host key the
+# guest rotated, disconnects before authenticating every few seconds, and
+# sshd then refuses *every* host-side connection with "Not allowed at this
+# time" for as long as that keeps up; Lima's start waits ten minutes on it.
+# Exempting the gateway address keeps the penalties for every other source
+# (the agent on loopback, containers) and removes the shared blast radius.
+# This runs first: on an instance's first boot the drop-in does not exist
+# yet, and until it does a stale client can keep Lima's readiness probe
+# locked out, so the window must not also cover the package installs below.
+# Nothing here needs them: sshd and getent ship with the image.
+#
+# sshd rejects a config it cannot parse and then refuses to start or reload,
+# which would lock the host out for good, so the drop-in is validated on its
+# own (sshd -t -f) before it is moved into place: the staged name is outside
+# the *.conf include glob, so an interrupted write or an sshd too old for the
+# directive never leaves a file that the next boot's sshd would choke on.
+# reload-or-restart applies it to this boot and also starts an sshd that a
+# previous boot left down; later boots read it at start. Like the trim timer
+# below, a failure here is a warning.
+SSHD_DROPIN=/etc/ssh/sshd_config.d/20-sandbox-host-clients.conf
+# The lookup is best-effort (|| true, or set -e would abort provisioning on
+# exactly the failure the fallback is for).
+HOST_ADDR=$(getent ahostsv4 host.lima.internal 2> /dev/null | awk 'NR == 1 { print $1 }' || true)
+: "${HOST_ADDR:=192.168.5.2}"
+SSHD_DROPIN_WANT="# Written by code-vm (provision-system.sh). Every host-side SSH client arrives
+# from the Lima gateway, so one misbehaving client must not get all of them
+# refused; penalties stay on for every other source. See provision-system.sh.
+PerSourcePenaltyExemptList ${HOST_ADDR}
+"
+if [ "$(cat "$SSHD_DROPIN" 2> /dev/null)" != "$(printf '%s' "$SSHD_DROPIN_WANT")" ]; then
+    SSHD_DROPIN_STAGED="${SSHD_DROPIN}.staged"
+    if ! { printf '%s' "$SSHD_DROPIN_WANT" > "$SSHD_DROPIN_STAGED"; } 2> /dev/null; then
+        log "WARNING: could not write $SSHD_DROPIN_STAGED; host-side SSH clients stay subject to sshd's per-source penalties"
+    elif SSHD_T_ERR=$(sshd -t -f "$SSHD_DROPIN_STAGED" 2>&1 | tr '\n' ' '); then
+        if mv -f "$SSHD_DROPIN_STAGED" "$SSHD_DROPIN" 2> /dev/null; then
+            systemctl reload-or-restart ssh 2> /dev/null ||
+                log "WARNING: could not reload sshd; the host exemption from its per-source penalties applies on the next boot"
+        else
+            rm -f "$SSHD_DROPIN_STAGED"
+            log "WARNING: could not install $SSHD_DROPIN; host-side SSH clients stay subject to sshd's per-source penalties"
+        fi
+    else
+        rm -f "$SSHD_DROPIN_STAGED"
+        log "WARNING: sshd rejects exempting ${HOST_ADDR} from its per-source penalties (${SSHD_T_ERR% }); host-side SSH clients stay subject to them"
+    fi
+fi
+
 # ── Agent user ───────────────────────────────────────────────────────────────
 # UID/GID mirror the host user so virtiofs-shared workspace files are genuinely
 # owned by the agent, and stay host-owned when viewed from the host.
@@ -281,54 +333,6 @@ if [ ! -S "/run/user/${AGENT_UID}/docker.sock" ]; then
         PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin \
         CONTAINER_PROXY="$CONTAINER_PROXY" \
         bash /usr/local/lib/sandbox/provision-user-docker.sh
-fi
-
-# ── Host-side SSH clients ────────────────────────────────────────────────────
-# Every SSH client on the host (Lima's own readiness probes, code-vm, Orca,
-# plain ssh) reaches this sshd through Lima's port forward, so they all
-# arrive from one guest-side address: the Lima gateway, host.lima.internal.
-# OpenSSH's per-source penalties (on by default since 9.8) treat them as one
-# client. A single misbehaving one, such as Orca still pinning a host key the
-# guest rotated, disconnects before authenticating every few seconds, and
-# sshd then refuses *every* host-side connection with "Not allowed at this
-# time" for as long as that keeps up; Lima's start waits ten minutes on it.
-# Exempting the gateway address keeps the penalties for every other source
-# (the agent on loopback, containers) and removes the shared blast radius.
-#
-# sshd rejects a config it cannot parse and then refuses to start or reload,
-# which would lock the host out for good, so the drop-in is validated on its
-# own (sshd -t -f) before it is moved into place: the staged name is outside
-# the *.conf include glob, so an interrupted write or an sshd too old for the
-# directive never leaves a file that the next boot's sshd would choke on.
-# reload-or-restart applies it to this boot and also starts an sshd that a
-# previous boot left down; later boots read it at start. Like the trim timer
-# above, a failure here is a warning.
-SSHD_DROPIN=/etc/ssh/sshd_config.d/20-sandbox-host-clients.conf
-# The lookup is best-effort (|| true, or set -e would abort provisioning on
-# exactly the failure the fallback is for).
-HOST_ADDR=$(getent ahostsv4 host.lima.internal 2> /dev/null | awk 'NR == 1 { print $1 }' || true)
-: "${HOST_ADDR:=192.168.5.2}"
-SSHD_DROPIN_WANT="# Written by code-vm (provision-system.sh). Every host-side SSH client arrives
-# from the Lima gateway, so one misbehaving client must not get all of them
-# refused; penalties stay on for every other source. See provision-system.sh.
-PerSourcePenaltyExemptList ${HOST_ADDR}
-"
-if [ "$(cat "$SSHD_DROPIN" 2> /dev/null)" != "$(printf '%s' "$SSHD_DROPIN_WANT")" ]; then
-    SSHD_DROPIN_STAGED="${SSHD_DROPIN}.staged"
-    if ! { printf '%s' "$SSHD_DROPIN_WANT" > "$SSHD_DROPIN_STAGED"; } 2> /dev/null; then
-        log "WARNING: could not write $SSHD_DROPIN_STAGED; host-side SSH clients stay subject to sshd's per-source penalties"
-    elif SSHD_T_ERR=$(sshd -t -f "$SSHD_DROPIN_STAGED" 2>&1 | tr '\n' ' '); then
-        if mv -f "$SSHD_DROPIN_STAGED" "$SSHD_DROPIN" 2> /dev/null; then
-            systemctl reload-or-restart ssh 2> /dev/null ||
-                log "WARNING: could not reload sshd; the host exemption from its per-source penalties applies on the next boot"
-        else
-            rm -f "$SSHD_DROPIN_STAGED"
-            log "WARNING: could not install $SSHD_DROPIN; host-side SSH clients stay subject to sshd's per-source penalties"
-        fi
-    else
-        rm -f "$SSHD_DROPIN_STAGED"
-        log "WARNING: sshd rejects exempting ${HOST_ADDR} from its per-source penalties (${SSHD_T_ERR% }); host-side SSH clients stay subject to them"
-    fi
 fi
 
 # ── Boot sequence ────────────────────────────────────────────────────────────
